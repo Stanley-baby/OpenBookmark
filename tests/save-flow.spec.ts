@@ -9,14 +9,28 @@ let fixtureServer: Server;
 let fixtureUrl: string;
 
 test.beforeAll(async () => {
-  fixtureServer = createServer((_, response) => {
+  fixtureServer = createServer((request, response) => {
     response.setHeader('Content-Type', 'text/html');
-    response.end('<!doctype html><title>Offline fixture</title><h1>Fixture page</h1>');
+    if (request.url?.startsWith('/metadata')) {
+      response.end(`<!doctype html>
+        <title>Document fallback</title>
+        <meta name="twitter:title" content="Twitter title">
+        <meta property="og:description" content="Open Graph description">
+        <meta property="og:image" content="/cover.jpg">
+        <h1>Metadata fixture</h1>`);
+    } else if (request.url?.startsWith('/broken')) {
+      response.end(`<!doctype html>
+        <title>Fallback title</title>
+        <script type="application/ld+json">{broken</script>
+        <h1>Broken metadata fixture</h1>`);
+    } else {
+      response.end('<!doctype html><title>Offline fixture</title><h1>Fixture page</h1>');
+    }
   });
   await new Promise<void>((resolve) => fixtureServer.listen(0, '127.0.0.1', resolve));
   const address = fixtureServer.address();
   if (!address || typeof address === 'string') throw new Error('Fixture server did not start');
-  fixtureUrl = `http://127.0.0.1:${address.port}/bookmark`;
+  fixtureUrl = `http://localhost:${address.port}/bookmark`;
 });
 
 test.afterAll(async () => {
@@ -31,9 +45,8 @@ async function launch(profile: string) {
   });
 }
 
-async function getExtensionId(context: BrowserContext) {
-  const worker = context.serviceWorkers()[0] ?? await context.waitForEvent('serviceworker');
-  return new URL(worker.url()).host;
+async function getExtensionWorker(context: BrowserContext) {
+  return context.serviceWorkers()[0] ?? context.waitForEvent('serviceworker');
 }
 
 test('save is visible in Manager and survives a browser restart', async () => {
@@ -42,9 +55,28 @@ test('save is visible in Manager and survives a browser restart', async () => {
 
   try {
     context = await launch(profile);
-    const extensionId = await getExtensionId(context);
-    const manifest = JSON.parse(await readFile(path.join(extensionPath, 'manifest.json'), 'utf8')) as { action?: { default_popup?: string } };
+    const worker = await getExtensionWorker(context);
+    const extensionId = new URL(worker.url()).host;
+    const manifest = JSON.parse(await readFile(path.join(extensionPath, 'manifest.json'), 'utf8')) as {
+      action?: { default_popup?: string };
+      commands?: Record<string, { suggested_key?: { default?: string } }>;
+      content_scripts?: unknown;
+      permissions?: string[];
+    };
     expect(manifest.action?.default_popup).toBe('popup.html');
+    expect(manifest.commands?.['save-page']?.suggested_key?.default).toBe('Ctrl+Shift+S');
+    expect(manifest.permissions).toEqual(expect.arrayContaining(['contextMenus', 'scripting']));
+    expect(manifest.content_scripts).toBeUndefined();
+    const listeners = await worker.evaluate(() => {
+      const extensionApi = (globalThis as unknown as {
+        chrome: { commands: { onCommand: { hasListeners(): boolean } }; contextMenus: { onClicked: { hasListeners(): boolean } } };
+      }).chrome;
+      return {
+        commands: extensionApi.commands.onCommand.hasListeners(),
+        contextMenus: extensionApi.contextMenus.onClicked.hasListeners(),
+      };
+    });
+    expect(listeners).toEqual({ commands: true, contextMenus: true });
     const manager = await context.newPage();
     await manager.goto(`chrome-extension://${extensionId}/manager.html`);
     await expect(manager.getByText('No bookmarks yet.')).toBeVisible();
@@ -60,20 +92,74 @@ test('save is visible in Manager and survives a browser restart', async () => {
     await expect(popup.getByLabel('URL')).toHaveValue(fixtureUrl);
     await popup.getByRole('button', { name: 'Save bookmark' }).click();
     await expect(popup.getByRole('status')).toHaveText('Saved');
+    await popup.getByLabel('Title').fill('Updated fixture');
+    await popup.getByLabel('URL').fill(fixtureUrl.replace('localhost', 'LOCALHOST'));
     await popup.getByRole('button', { name: 'Save bookmark' }).click();
 
-    await expect(manager.getByRole('link', { name: 'Offline fixture' })).toBeVisible();
-    await expect(manager.getByText(fixtureUrl)).toBeVisible();
+    await expect(manager.getByRole('link', { name: 'Updated fixture' })).toBeVisible();
     await expect(manager.locator('time')).toContainText('Saved');
     await expect(manager.getByRole('listitem')).toHaveCount(1);
+
+    await fixture.goto(`${fixtureUrl}?view=compact`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Query variant');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+    await expect(manager.getByRole('listitem')).toHaveCount(2);
     await context.close();
     context = undefined;
 
     context = await launch(profile);
+    const reopenedExtensionId = new URL((await getExtensionWorker(context)).url()).host;
     const reopenedManager = await context.newPage();
-    await reopenedManager.goto(`chrome-extension://${extensionId}/manager.html`);
-    await expect(reopenedManager.getByRole('link', { name: 'Offline fixture' })).toBeVisible();
-    await expect(reopenedManager.getByText(fixtureUrl)).toBeVisible();
+    await reopenedManager.goto(`chrome-extension://${reopenedExtensionId}/manager.html`);
+    await expect(reopenedManager.getByRole('link', { name: 'Updated fixture' })).toBeVisible();
+    await expect(reopenedManager.getByRole('link', { name: 'Query variant' })).toBeVisible();
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('metadata is editable and malformed metadata falls back to the document', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const fixture = await context.newPage();
+    await fixture.goto(fixtureUrl.replace('/bookmark', '/metadata'));
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await fixture.bringToFront();
+    await popup.reload();
+
+    await expect(popup.getByLabel('Title')).toHaveValue('Twitter title');
+    await expect(popup.getByLabel('Description')).toHaveValue('Open Graph description');
+    await expect(popup.getByLabel('Cover')).toHaveValue(fixtureUrl.replace('/bookmark', '/cover.jpg'));
+    await popup.getByLabel('Title').fill('Edited title');
+    await popup.getByLabel('Note').fill('Remember this');
+    await popup.getByLabel('Favorite').check();
+    await popup.getByLabel('Unread').check();
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+    await expect(popup.getByRole('status')).toHaveText('Saved');
+
+    await fixture.bringToFront();
+    await popup.reload();
+    await expect(popup.getByLabel('Title')).toHaveValue('Edited title');
+    await expect(popup.getByLabel('Note')).toHaveValue('Remember this');
+    await expect(popup.getByLabel('Favorite')).toBeChecked();
+    await expect(popup.getByLabel('Unread')).toBeChecked();
+
+    await fixture.goto(fixtureUrl.replace('/bookmark', '/broken'));
+    await fixture.bringToFront();
+    await popup.reload();
+    await expect(popup.getByLabel('Title')).toHaveValue('Fallback title');
+    await expect(popup.getByLabel('Description')).toHaveValue('');
+    await popup.getByLabel('Title').fill('Manual fallback');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+    await expect(popup.getByRole('status')).toHaveText('Saved');
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });
