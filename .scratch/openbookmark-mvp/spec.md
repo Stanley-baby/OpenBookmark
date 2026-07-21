@@ -3,7 +3,7 @@
 Status: ready-for-agent
 
 Published: 2026-07-21  
-Tracker: local-markdown
+Tracker: GitHub Issues (`Stanley-baby/OpenBookmark`)
 
 ## Problem Statement
 

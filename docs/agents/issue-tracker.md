@@ -1,15 +1,14 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub
 
-Issues and specs for this project live as Markdown files in `.scratch/`.
+Issues and specs for this project live in GitHub Issues at `Stanley-baby/OpenBookmark`.
 
 ## Conventions
 
-- One feature per directory: `.scratch/<feature-slug>/`
-- The spec is `.scratch/<feature-slug>/spec.md`
-- Implementation issues are one file per ticket under `.scratch/<feature-slug>/issues/`, numbered from `01`
-- Triage state is recorded as a `Status:` line near the top of each issue file
-- Comments and conversation history append under a `## Comments` heading
+- Create, read, comment on, label and close work through GitHub Issues.
+- Infer the repository from the Git remote when working in the local checkout.
+- Use the label vocabulary defined in `triage-labels.md`.
+- Pull requests are not a request or triage surface.
 
 ## Publishing
 
-When a skill says to publish to the issue tracker, create or update the corresponding file under `.scratch/<feature-slug>/`.
+When a skill says to publish to the issue tracker, create a GitHub Issue in `Stanley-baby/OpenBookmark`.

@@ -4,7 +4,7 @@
 
 ### Issue tracker
 
-Issues and specs are tracked as local Markdown under `.scratch/`. See `docs/agents/issue-tracker.md`.
+Issues and specs are tracked in `Stanley-baby/OpenBookmark` on GitHub. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
