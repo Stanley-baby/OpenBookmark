@@ -99,6 +99,63 @@ h1 {
   font-size: 20px;
 }
 
+.manager-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 16px;
+  padding: 16px 0;
+}
+
+.manager-controls > label {
+  display: grid;
+  gap: 4px;
+}
+
+.manager-controls > label:first-child {
+  flex: 1 1 320px;
+}
+
+.manager-controls select {
+  min-height: 36px;
+}
+
+.view-options {
+  display: flex;
+  gap: 4px;
+}
+
+.view-options button[aria-pressed="true"] {
+  border-color: hsl(207 80% 44%);
+  background: hsl(207 80% 96%);
+}
+
+.manager-controls input[type="search"] {
+  width: 100%;
+  min-height: 36px;
+}
+
+.manager-controls fieldset {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  border: 0;
+}
+
+.manager-controls legend {
+  font-size: 12px;
+}
+
+.empty-state {
+  padding: 32px 0;
+  text-align: center;
+}
+
+.bookmark-list.card-view {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-items: start;
+}
+
 .bookmark-list > li {
   display: grid;
   gap: 4px;

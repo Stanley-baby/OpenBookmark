@@ -45,6 +45,20 @@ const en = {
   removeTagFrom: 'Remove {tag} from {title}',
   renameCollectionPrompt: 'Rename collection',
   deleteImpact: 'Deleting “{title}” moves {bookmarks} bookmark(s) and {children} child collection(s) to its parent. No bookmarks will be permanently deleted.',
+  searchBookmarks: 'Search bookmarks',
+  filters: 'Bookmark filters',
+  filtersCombineAnd: 'Filters combine with AND',
+  favoriteOnly: 'Favorite only',
+  unreadOnly: 'Unread only',
+  noMatches: 'No bookmarks match your filters.',
+  clearAllFilters: 'Clear all filters',
+  sortBookmarks: 'Sort bookmarks',
+  newestFirst: 'Newest saved first',
+  oldestFirst: 'Oldest saved first',
+  titleAZ: 'Title A–Z',
+  view: 'Bookmark view',
+  listView: 'List view',
+  cardView: 'Card view',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -94,6 +108,20 @@ const zh: Record<MessageKey, string> = {
   removeTagFrom: '从 {title} 移除 {tag}',
   renameCollectionPrompt: '重命名收藏夹',
   deleteImpact: '删除“{title}”会把 {bookmarks} 个书签和 {children} 个子收藏夹移到上一级。书签不会被永久删除。',
+  searchBookmarks: '搜索书签',
+  filters: '书签筛选',
+  filtersCombineAnd: '筛选条件按“且”组合',
+  favoriteOnly: '仅收藏状态',
+  unreadOnly: '仅未读状态',
+  noMatches: '没有符合当前筛选条件的书签。',
+  clearAllFilters: '清除全部筛选',
+  sortBookmarks: '书签排序',
+  newestFirst: '最新保存优先',
+  oldestFirst: '最早保存优先',
+  titleAZ: '标题 A–Z',
+  view: '书签视图',
+  listView: '列表视图',
+  cardView: '卡片视图',
 };
 
 const messages = { en, zh };

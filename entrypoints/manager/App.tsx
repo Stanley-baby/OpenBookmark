@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { browser } from 'wxt/browser';
 import {
   bookmarkRepository,
   collectionDescendantIds,
@@ -9,12 +10,32 @@ import {
 } from '../../lib/bookmarks';
 import { type Locale, useI18n } from '../../lib/i18n';
 
+type SortMode = 'newest' | 'oldest' | 'title';
+type ViewMode = 'list' | 'card';
+
+interface ManagerPreferences {
+  sort: SortMode;
+  view: ViewMode;
+  collectionFilter: string | null;
+  tagFilter: string | null;
+  favoriteOnly: boolean;
+  unreadOnly: boolean;
+}
+
+const preferencesKey = 'managerPreferences';
+
 export default function App() {
   const { locale, setLocale, t } = useI18n();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
+  const [search, setSearch] = useState('');
   const [collectionFilter, setCollectionFilter] = useState<string | null>(null);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
+  const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const [sort, setSort] = useState<SortMode>('newest');
+  const [view, setView] = useState<ViewMode>('list');
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const collectionLabels = useMemo(
     () => new Map(collections.map((collection) => [collection.id, collectionPath(collection, collections)])),
@@ -34,9 +55,51 @@ export default function App() {
     };
   }, []);
 
-  const visibleBookmarks = bookmarks.filter((bookmark) =>
-    (!collectionFilter || bookmark.collectionId === collectionFilter) && (!tagFilter || bookmark.tags.includes(tagFilter)),
-  );
+  useEffect(() => {
+    let active = true;
+    void browser.storage.local.get(preferencesKey).then((result) => {
+      if (!active) return;
+      const preferences = result[preferencesKey] as Partial<ManagerPreferences> | undefined;
+      if (preferences?.sort === 'newest' || preferences?.sort === 'oldest' || preferences?.sort === 'title') setSort(preferences.sort);
+      if (preferences?.view === 'list' || preferences?.view === 'card') setView(preferences.view);
+      setCollectionFilter(typeof preferences?.collectionFilter === 'string' ? preferences.collectionFilter : null);
+      setTagFilter(typeof preferences?.tagFilter === 'string' ? preferences.tagFilter : null);
+      setFavoriteOnly(preferences?.favoriteOnly === true);
+      setUnreadOnly(preferences?.unreadOnly === true);
+      setPreferencesLoaded(true);
+    });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    const preferences: ManagerPreferences = { sort, view, collectionFilter, tagFilter, favoriteOnly, unreadOnly };
+    void browser.storage.local.set({ [preferencesKey]: preferences });
+  }, [collectionFilter, favoriteOnly, preferencesLoaded, sort, tagFilter, unreadOnly, view]);
+
+  const visibleBookmarks = useMemo(() => {
+    const query = search.trim().toLocaleLowerCase();
+    const filtered = bookmarks.filter((bookmark) => {
+      const searchableText = [bookmark.title, bookmark.url, bookmark.description, bookmark.note, ...bookmark.tags]
+        .join('\n')
+        .toLocaleLowerCase();
+      return (!query || searchableText.includes(query))
+        && (!collectionFilter || bookmark.collectionId === collectionFilter)
+        && (!tagFilter || bookmark.tags.includes(tagFilter))
+        && (!favoriteOnly || bookmark.favorite)
+        && (!unreadOnly || bookmark.unread);
+    });
+    return filtered.sort((a, b) => {
+      const byId = a.id.localeCompare(b.id);
+      if (sort === 'oldest') return a.createdAt.localeCompare(b.createdAt) || byId;
+      if (sort === 'title') {
+        return a.title.localeCompare(b.title, locale === 'zh' ? 'zh-CN' : 'en', { sensitivity: 'base' })
+          || a.createdAt.localeCompare(b.createdAt)
+          || byId;
+      }
+      return b.createdAt.localeCompare(a.createdAt) || byId;
+    });
+  }, [bookmarks, collectionFilter, favoriteOnly, locale, search, sort, tagFilter, unreadOnly]);
   const tags = useMemo(() => [...new Set(bookmarks.flatMap((bookmark) => bookmark.tags))].sort(), [bookmarks]);
   const dateFormat = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' });
 
@@ -61,13 +124,21 @@ export default function App() {
     if (collectionFilter === collection.id) setCollectionFilter(null);
   }
 
+  function clearFilters() {
+    setSearch('');
+    setCollectionFilter(null);
+    setTagFilter(null);
+    setFavoriteOnly(false);
+    setUnreadOnly(false);
+  }
+
   return (
     <div className="layout">
       <aside>
         <strong>OpenBookmark</strong>
         <section className="collections" aria-labelledby="collections-heading">
           <h2 id="collections-heading">{t('collections')}</h2>
-          <button type="button" onClick={() => setCollectionFilter(null)}>{t('allBookmarks')}</button>
+          <button type="button" aria-pressed={collectionFilter === null} onClick={() => setCollectionFilter(null)}>{t('allBookmarks')}</button>
           <form onSubmit={(event) => { event.preventDefault(); void createCollection(event.currentTarget); }}>
             <label>
               {t('newCollectionName')}
@@ -91,6 +162,7 @@ export default function App() {
                     type="button"
                     data-collection-id={collection.id}
                     className={collectionFilter === collection.id ? 'selected' : ''}
+                    aria-pressed={collectionFilter === collection.id}
                     onClick={() => setCollectionFilter(collection.id)}
                   >
                     {collection.title}
@@ -124,7 +196,7 @@ export default function App() {
           <section aria-labelledby="tags-heading">
             <h2 id="tags-heading">{t('tags')}</h2>
             {tagFilter && <button type="button" onClick={() => setTagFilter(null)}>{t('clearFilter')}</button>}
-            <div className="tag-list">{tags.map((tag) => <button key={tag} type="button" onClick={() => setTagFilter(tag)}>{tag}</button>)}</div>
+            <div className="tag-list">{tags.map((tag) => <button key={tag} type="button" aria-pressed={tagFilter === tag} onClick={() => setTagFilter(tag)}>{tag}</button>)}</div>
           </section>
         )}
       </aside>
@@ -140,8 +212,37 @@ export default function App() {
           </label>
         </header>
 
-        {failed ? <p role="alert">{t('loadError')}</p> : visibleBookmarks.length === 0 ? <p>{t('empty')}</p> : (
-          <ul className="bookmark-list" aria-label={t('manager')}>
+        <section className="manager-controls" aria-label={t('filters')}>
+          <label>
+            {t('searchBookmarks')}
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
+          </label>
+          <label>
+            {t('sortBookmarks')}
+            <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)}>
+              <option value="newest">{t('newestFirst')}</option>
+              <option value="oldest">{t('oldestFirst')}</option>
+              <option value="title">{t('titleAZ')}</option>
+            </select>
+          </label>
+          <div className="view-options" role="group" aria-label={t('view')}>
+            <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>{t('listView')}</button>
+            <button type="button" aria-pressed={view === 'card'} onClick={() => setView('card')}>{t('cardView')}</button>
+          </div>
+          <fieldset>
+            <legend>{t('filtersCombineAnd')}</legend>
+            <label><input type="checkbox" checked={favoriteOnly} onChange={(event) => setFavoriteOnly(event.target.checked)} /> {t('favoriteOnly')}</label>
+            <label><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} /> {t('unreadOnly')}</label>
+          </fieldset>
+        </section>
+
+        {failed ? <p role="alert">{t('loadError')}</p> : bookmarks.length === 0 ? <p>{t('empty')}</p> : visibleBookmarks.length === 0 ? (
+          <div className="empty-state">
+            <p>{t('noMatches')}</p>
+            <button type="button" onClick={clearFilters}>{t('clearAllFilters')}</button>
+          </div>
+        ) : (
+          <ul className={`bookmark-list ${view}-view`} aria-label={t('manager')}>
             {visibleBookmarks.map((bookmark) => (
               <li key={bookmark.id}>
                 <a href={bookmark.url} target="_blank" rel="noreferrer">{bookmark.title}</a>

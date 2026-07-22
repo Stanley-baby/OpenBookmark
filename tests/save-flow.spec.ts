@@ -305,3 +305,123 @@ test('safe collection deletion preserves bookmarks and normalized tags', async (
     await rm(profile, { recursive: true, force: true });
   }
 });
+
+test('Manager searches every agreed field and combines filters', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+    await manager.getByLabel('New collection name').fill('Focus');
+    await manager.getByRole('button', { name: 'Create collection' }).click();
+    await expect(manager.getByRole('button', { name: 'Focus', exact: true })).toBeVisible();
+
+    const fixture = await context.newPage();
+    const popup = await context.newPage();
+    const saveBookmark = async (item: string, values: {
+      title: string;
+      description?: string;
+      note?: string;
+      tags: string;
+      favorite?: boolean;
+      unread?: boolean;
+    }) => {
+      await fixture.goto(`${fixtureUrl}?item=${item}`);
+      if (popup.url() === 'about:blank') await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+      await fixture.bringToFront();
+      await popup.reload();
+      await popup.getByLabel('Title').fill(values.title);
+      await popup.getByLabel('Description').fill(values.description ?? '');
+      await popup.getByLabel('Note').fill(values.note ?? '');
+      await popup.getByLabel('Collection').selectOption({ label: 'Focus' });
+      await popup.getByLabel('Tags').fill(values.tags);
+      if (values.favorite) await popup.getByLabel('Favorite').check();
+      if (values.unread) await popup.getByLabel('Unread').check();
+      await popup.getByRole('button', { name: 'Save bookmark' }).click();
+      await expect(popup.getByRole('status')).toHaveText('Saved');
+    };
+
+    await saveBookmark('url-needle', { title: 'Title Needle', tags: 'red', favorite: true, unread: true });
+    await saveBookmark('description', { title: 'Second bookmark', description: 'Description Needle', tags: 'red', unread: true });
+    await saveBookmark('note', { title: 'Blue bookmark', note: 'Note Needle', tags: 'blue, tag-needle', favorite: true, unread: true });
+    await saveBookmark('equal-title', { title: 'Blue bookmark', tags: 'blue', favorite: true, unread: true });
+
+    const search = manager.getByLabel('Search bookmarks');
+    for (const [term, title] of [
+      ['title needle', 'Title Needle'],
+      ['url-needle', 'Title Needle'],
+      ['description needle', 'Second bookmark'],
+      ['note needle', 'Blue bookmark'],
+      ['tag-needle', 'Blue bookmark'],
+    ] as const) {
+      await search.fill(term);
+      await expect(manager.getByRole('link', { name: title })).toBeVisible();
+      await expect(manager.locator('.bookmark-list > li')).toHaveCount(1);
+    }
+
+    await manager.getByRole('button', { name: 'Focus', exact: true }).click();
+    await search.fill('missing');
+    await expect(manager.getByText('No bookmarks match your filters.')).toBeVisible();
+    await search.fill('');
+    await expect(manager.locator('.bookmark-list > li')).toHaveCount(4);
+
+    await manager.getByRole('button', { name: 'red', exact: true }).click();
+    await manager.getByLabel('Favorite only').check();
+    await manager.getByLabel('Unread only').check();
+    await expect(manager.getByRole('link', { name: 'Title Needle' })).toBeVisible();
+    await expect(manager.locator('.bookmark-list > li')).toHaveCount(1);
+    await search.fill('blue');
+    await expect(manager.getByText('No bookmarks match your filters.')).toBeVisible();
+    await manager.getByRole('button', { name: 'Clear all filters' }).click();
+    await expect(manager.locator('.bookmark-list > li')).toHaveCount(4);
+
+    const sort = manager.getByLabel('Sort bookmarks');
+    await expect(sort).toBeVisible();
+    await search.focus();
+    await search.press('Tab');
+    await expect(sort).toBeFocused();
+    await sort.selectOption('title');
+    const listLinks = [
+      `${fixtureUrl}?item=note`,
+      `${fixtureUrl}?item=equal-title`,
+      `${fixtureUrl}?item=description`,
+      `${fixtureUrl}?item=url-needle`,
+    ];
+    await expect.poll(() => manager.locator('.bookmark-list > li > a').evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href))).toEqual(listLinks);
+    await sort.press('Tab');
+    await expect(manager.getByRole('button', { name: 'List view' })).toBeFocused();
+    await manager.getByRole('button', { name: 'List view' }).press('Tab');
+    const cardView = manager.getByRole('button', { name: 'Card view' });
+    await expect(cardView).toBeFocused();
+    await cardView.press('Enter');
+    await expect(cardView).toHaveAttribute('aria-pressed', 'true');
+    await expect(manager.locator('.bookmark-list > li > a')).toHaveCount(4);
+    await expect.poll(() => manager.locator('.bookmark-list > li > a').evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href))).toEqual(listLinks);
+    await manager.getByRole('button', { name: 'Focus', exact: true }).click();
+    await manager.getByRole('button', { name: 'blue', exact: true }).click();
+    await manager.getByLabel('Favorite only').check();
+    await manager.getByLabel('Unread only').check();
+    await expect.poll(() => manager.locator('.bookmark-list > li > a').evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href))).toEqual(listLinks.slice(0, 2));
+    await context.close();
+    context = undefined;
+
+    context = await launch(profile);
+    const reopenedExtensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const reopenedManager = await context.newPage();
+    await reopenedManager.goto(`chrome-extension://${reopenedExtensionId}/manager.html`);
+    await expect(reopenedManager.getByLabel('Sort bookmarks')).toHaveValue('title');
+    await expect(reopenedManager.getByRole('button', { name: 'Card view' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(reopenedManager.getByRole('button', { name: 'Focus', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(reopenedManager.getByRole('button', { name: 'blue', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(reopenedManager.getByLabel('Favorite only')).toBeChecked();
+    await expect(reopenedManager.getByLabel('Unread only')).toBeChecked();
+    await expect.poll(() => reopenedManager.locator('.bookmark-list > li > a').evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href))).toEqual(listLinks.slice(0, 2));
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
