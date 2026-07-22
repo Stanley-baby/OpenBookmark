@@ -13,6 +13,7 @@ import { type Locale, useI18n } from '../../lib/i18n';
 import { readDocumentMetadata } from '../../lib/metadata';
 import { parseBrowserBookmarksHtmlFile, pathKey, serializeBrowserBookmarksHtmlInBatches, type BrowserHtmlBookmark } from '../../lib/browser-html';
 import { exportOpenBookmarkJson, parseOpenBookmarkJson } from '../../lib/openbookmark-json';
+import { planRaindropJsonImport } from '../../lib/raindrop-json';
 
 type SortMode = 'newest' | 'oldest' | 'title';
 type ViewMode = 'list' | 'card';
@@ -317,6 +318,13 @@ export default function App() {
     });
   }
 
+  async function importPlannedBookmark(item: { bookmark: Parameters<typeof bookmarkRepository.save>[0]; collectionPath: string[] }) {
+    await bookmarkRepository.save({
+      ...item.bookmark,
+      collectionId: await collectionForImportPath(item.collectionPath),
+    });
+  }
+
   async function importBrowserHtml(file: File | undefined) {
     if (!file || importing) return;
     setImporting(true);
@@ -330,7 +338,7 @@ export default function App() {
       for (const bookmark of parsed.bookmarks) {
         if (importCancelRef.current) break;
         try {
-          await importBrowserHtmlBookmark(bookmark);
+        await importBrowserHtmlBookmark(bookmark);
           imported += 1;
         } catch {
           skipped += 1;
@@ -363,6 +371,28 @@ export default function App() {
       setManagerStatus(t('jsonRestoreDone', { bookmarks: data.bookmarks.length, collections: data.collections.length }));
     } catch (error) {
       setManagerStatus(t('jsonRestoreFailed', { reason: error instanceof Error ? error.message : 'Invalid JSON' }));
+    }
+  }
+
+  async function importRaindropJson(file: File | undefined) {
+    if (!file) return;
+    try {
+      const plan = planRaindropJsonImport(JSON.parse(await file.text()), new Set(bookmarks.map((bookmark) => bookmark.normalizedUrl)));
+      if (!confirm(t('confirmRaindropImport', {
+        imported: plan.items.length,
+        skipped: plan.skipped,
+        duplicates: plan.duplicates,
+        unknown: plan.unknownFields.join(', ') || t('none'),
+      }))) return;
+      for (const item of plan.items) await importPlannedBookmark(item);
+      setManagerStatus(t('raindropImportDone', {
+        imported: plan.items.length,
+        skipped: plan.skipped,
+        duplicates: plan.duplicates,
+        unknown: plan.unknownFields.join(', ') || t('none'),
+      }));
+    } catch (error) {
+      setManagerStatus(t('raindropImportFailed', { reason: error instanceof Error ? error.message : 'Invalid JSON' }));
     }
   }
 
@@ -519,6 +549,10 @@ export default function App() {
               <input type="file" accept=".json,application/json" onChange={(event) => void restoreOpenBookmarkJson(event.currentTarget.files?.[0])} />
             </label>
             <button type="button" onClick={() => void exportOpenBookmarkData()}>{t('exportOpenBookmarkJson')}</button>
+            <label>
+              {t('importRaindropJson')}
+              <input type="file" accept=".json,application/json" onChange={(event) => void importRaindropJson(event.currentTarget.files?.[0])} />
+            </label>
           </section>
         )}
         {!showTrash && visibleBookmarks.length > 0 && (

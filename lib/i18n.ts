@@ -5,6 +5,7 @@ const en = {
   language: 'Language',
   english: 'English',
   chinese: '中文',
+  none: 'none',
   currentPage: 'Current page',
   title: 'Title',
   url: 'URL',
@@ -117,6 +118,10 @@ const en = {
   jsonRestoreFailed: 'JSON restore failed: {reason}',
   jsonExportDone: 'JSON export complete: {bookmarks} bookmarks, {collections} collections.',
   jsonExportFailed: 'JSON export failed: {reason}',
+  importRaindropJson: 'Import source JSON',
+  confirmRaindropImport: 'Import {imported} source bookmarks? {duplicates} duplicates and {skipped} damaged items will be skipped. Unmapped fields: {unknown}.',
+  raindropImportDone: 'Source import complete: {imported} imported, {duplicates} duplicates, {skipped} skipped. Unmapped fields: {unknown}.',
+  raindropImportFailed: 'Raindrop import failed: {reason}',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -126,6 +131,7 @@ const zh: Record<MessageKey, string> = {
   language: '语言',
   english: 'English',
   chinese: '中文',
+  none: '无',
   currentPage: '当前页面',
   title: '标题',
   url: '网址',
@@ -238,6 +244,10 @@ const zh: Record<MessageKey, string> = {
   jsonRestoreFailed: 'JSON 恢复失败：{reason}',
   jsonExportDone: 'JSON 导出完成：{bookmarks} 个书签，{collections} 个收藏夹。',
   jsonExportFailed: 'JSON 导出失败：{reason}',
+  importRaindropJson: '导入来源 JSON',
+  confirmRaindropImport: '确定导入 {imported} 个来源书签吗？将跳过 {duplicates} 个重复项和 {skipped} 个损坏项。未映射字段：{unknown}。',
+  raindropImportDone: '来源导入完成：导入 {imported} 个，重复 {duplicates} 个，跳过 {skipped} 个。未映射字段：{unknown}。',
+  raindropImportFailed: 'Raindrop 导入失败：{reason}',
 };
 
 const messages = { en, zh };
