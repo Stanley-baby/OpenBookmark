@@ -7,6 +7,8 @@
     "dev": "wxt",
     "build": "wxt build",
     "build:edge": "wxt build -b edge",
+    "package:release": "npm run build && npm run build:edge && node scripts/create-release-package.mjs && node scripts/audit-release-package.mjs",
+    "perf:fixtures": "node scripts/measure-performance.mjs",
     "typecheck": "tsc --noEmit",
     "test:smoke": "playwright test tests/save-flow.spec.ts",
     "test": "npm run build && playwright test",

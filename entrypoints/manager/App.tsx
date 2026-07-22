@@ -14,6 +14,12 @@ import { readDocumentMetadata } from '../../lib/metadata';
 import { parseBrowserBookmarksHtmlFile, pathKey, serializeBrowserBookmarksHtmlInBatches, type BrowserHtmlBookmark } from '../../lib/browser-html';
 import { exportOpenBookmarkJson, parseOpenBookmarkJson } from '../../lib/openbookmark-json';
 import { planRaindropJsonImport } from '../../lib/raindrop-json';
+import { ThumbnailCache, thumbnailPlaceholder } from '../../lib/thumbnail-cache';
+import { indexedDbThumbnailStore } from '../../lib/thumbnail-cache-db';
+import { backupScheduleKey, canUseWebDav, defaultBackupSchedule, restoreProtectionSnapshotKey, sanitizeWebDavSettings, webDavSettingsKey } from '../../lib/backup-settings';
+import { markAutomaticBackupFinished } from '../../lib/backup-scheduler';
+import { summarizeRestore } from '../../lib/backup-restore';
+import { enforceBackupRetention, parseBackup, uploadBackup, WebDavBackupClient, type BackupVersion, type WebDavSettings } from '../../lib/webdav-backup';
 
 type SortMode = 'newest' | 'oldest' | 'title';
 type ViewMode = 'list' | 'card';
@@ -28,6 +34,27 @@ interface ManagerPreferences {
 }
 
 const preferencesKey = 'managerPreferences';
+const thumbnailCache = new ThumbnailCache(indexedDbThumbnailStore);
+
+function ThumbnailCover({ coverUrl, title }: { coverUrl: string; title: string }) {
+  const [src, setSrc] = useState(thumbnailPlaceholder);
+
+  useEffect(() => {
+    let active = true;
+    let objectUrl = '';
+    void thumbnailCache.getCached(coverUrl).then((url) => {
+      objectUrl = url.startsWith('blob:') ? url : '';
+      if (active) setSrc(url);
+      else if (objectUrl) URL.revokeObjectURL(objectUrl);
+    });
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [coverUrl]);
+
+  return <img className="thumbnail" src={src} alt={coverUrl ? title : ''} />;
+}
 
 export default function App() {
   const { locale, setLocale, t } = useI18n();
@@ -51,6 +78,9 @@ export default function App() {
   const [bulkCollectionId, setBulkCollectionId] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [webDavSettings, setWebDavSettings] = useState<WebDavSettings>(sanitizeWebDavSettings(null));
+  const [backupVersions, setBackupVersions] = useState<BackupVersion[]>([]);
+  const [restorePassword, setRestorePassword] = useState('');
   const refreshCancelRef = useRef(false);
   const refreshAbortRef = useRef<AbortController | null>(null);
   const importCancelRef = useRef(false);
@@ -106,6 +136,12 @@ export default function App() {
     const preferences: ManagerPreferences = { sort, view, collectionFilter, tagFilter, favoriteOnly, unreadOnly };
     void browser.storage.local.set({ [preferencesKey]: preferences });
   }, [collectionFilter, favoriteOnly, preferencesLoaded, sort, tagFilter, unreadOnly, view]);
+
+  useEffect(() => {
+    void browser.storage.local.get(webDavSettingsKey).then((result) => {
+      setWebDavSettings(sanitizeWebDavSettings(result[webDavSettingsKey]));
+    });
+  }, []);
 
   const visibleBookmarks = useMemo(() => {
     const query = search.trim().toLocaleLowerCase();
@@ -432,6 +468,114 @@ export default function App() {
     }
   }
 
+  async function currentBackupData() {
+    const allBookmarks = await bookmarkRepository.listAll();
+    const tombstones = await bookmarkRepository.listTombstones();
+    const stored = await browser.storage.local.get(['locale', 'managerPreferences']);
+    const storedLocale: 'en' | 'zh' | null = stored.locale === 'en' || stored.locale === 'zh' ? stored.locale : null;
+    return {
+      collections,
+      bookmarks: allBookmarks,
+      tombstones,
+      settings: {
+        locale: storedLocale,
+        managerPreferences: stored.managerPreferences ?? null,
+      },
+    };
+  }
+
+  async function saveWebDavSettings(next: WebDavSettings) {
+    setWebDavSettings(next);
+    await browser.storage.local.set({
+      [webDavSettingsKey]: next,
+      [backupScheduleKey]: { ...defaultBackupSchedule, autoBackup: next.autoBackup },
+    });
+    setManagerStatus(t('backupSettingsSaved'));
+  }
+
+  async function testWebDavConnection() {
+    const result = await new WebDavBackupClient(webDavSettings).testConnection();
+    setManagerStatus(t(result === 'ok'
+      ? 'webDavConnected'
+      : result === 'auth-failed'
+        ? 'webDavAuthFailed'
+        : result === 'not-writable'
+          ? 'webDavNotWritable'
+          : 'webDavNetworkFailed'));
+  }
+
+  async function listWebDavVersions() {
+    try {
+      const versions = await new WebDavBackupClient(webDavSettings).listVersions();
+      setBackupVersions(versions);
+      setManagerStatus(t('backupVersionsLoaded', { count: versions.length }));
+    } catch (error) {
+      setManagerStatus(t('backupFailed', { reason: error instanceof Error ? error.message : 'Could not list backups' }));
+    }
+  }
+
+  async function runManualBackup() {
+    if (!canUseWebDav(webDavSettings)) {
+      setManagerStatus(t('backupSettingsIncomplete'));
+      return;
+    }
+    try {
+      const client = new WebDavBackupClient(webDavSettings);
+      const version = await uploadBackup(client, await currentBackupData(), webDavSettings);
+      const versions = await client.listVersions();
+      await enforceBackupRetention(client, versions);
+      setBackupVersions(versions.slice(0, 30));
+      await browser.storage.local.set({ [backupScheduleKey]: markAutomaticBackupFinished({ ...defaultBackupSchedule, autoBackup: webDavSettings.autoBackup }, Date.now()) });
+      setManagerStatus(t('backupDone', { name: version.name, size: version.size }));
+    } catch (error) {
+      setManagerStatus(t('backupFailed', { reason: error instanceof Error ? error.message : 'Could not create backup' }));
+    }
+  }
+
+  async function restoreWebDavVersion(version: BackupVersion) {
+    try {
+      const client = new WebDavBackupClient(webDavSettings);
+      const incoming = await parseBackup(await client.downloadVersion(version), restorePassword || webDavSettings.recoveryPassword);
+      const current = await currentBackupData();
+      const summary = summarizeRestore(current, incoming);
+      const message = t('confirmBackupRestore', {
+        name: version.name,
+        bookmarks: summary.bookmarks,
+        collections: summary.collections,
+        tombstones: summary.tombstones,
+        exportedAt: summary.sourceExportedAt,
+        added: summary.addedBookmarks,
+        removed: summary.removedBookmarks,
+      });
+      if (!confirm(message)) return;
+      await browser.storage.local.set({ [restoreProtectionSnapshotKey]: exportOpenBookmarkJson(current.collections, current.bookmarks, current.tombstones, current.settings) });
+      await bookmarkRepository.restoreBackup(incoming.bookmarks, incoming.collections, incoming.tombstones);
+      await browser.storage.local.set({
+        locale: incoming.settings.locale,
+        managerPreferences: incoming.settings.managerPreferences,
+      });
+      setManagerStatus(t('backupRestoreDone', { bookmarks: incoming.bookmarks.length, collections: incoming.collections.length }));
+    } catch (error) {
+      setManagerStatus(t('backupRestoreFailed', { reason: error instanceof Error ? error.message : 'Could not restore backup' }));
+    }
+  }
+
+  async function clearThumbnailCache() {
+    await thumbnailCache.clear();
+    setManagerStatus(t('thumbnailCacheCleared'));
+  }
+
+  async function regenerateThumbnailCache() {
+    let done = 0;
+    for (const bookmark of bookmarks.filter((item) => item.coverUrl)) {
+      await thumbnailCache.getOrFetch(bookmark.coverUrl);
+      done += 1;
+      setManagerStatus(t('thumbnailCacheProgress', { done, total: bookmarks.filter((item) => item.coverUrl).length }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    setManagerStatus(t('thumbnailCacheDone', { count: done }));
+  }
+
   return (
     <div className="layout">
       <aside>
@@ -555,6 +699,61 @@ export default function App() {
             </label>
           </section>
         )}
+        {!showTrash && (
+          <section className="backup-panel" aria-labelledby="backup-heading">
+            <h2 id="backup-heading">{t('backupAndRestore')}</h2>
+            <div className="settings-grid">
+              <label>
+                {t('webDavUrl')}
+                <input value={webDavSettings.url} onChange={(event) => setWebDavSettings({ ...webDavSettings, url: event.target.value })} />
+              </label>
+              <label>
+                {t('webDavDirectory')}
+                <input value={webDavSettings.directory} onChange={(event) => setWebDavSettings({ ...webDavSettings, directory: event.target.value })} />
+              </label>
+              <label>
+                {t('webDavUsername')}
+                <input autoComplete="username" value={webDavSettings.username} onChange={(event) => setWebDavSettings({ ...webDavSettings, username: event.target.value })} />
+              </label>
+              <label>
+                {t('webDavPassword')}
+                <input type="password" autoComplete="current-password" value={webDavSettings.password} onChange={(event) => setWebDavSettings({ ...webDavSettings, password: event.target.value })} />
+              </label>
+              <label>
+                {t('recoveryPassword')}
+                <input type="password" value={webDavSettings.recoveryPassword ?? ''} onChange={(event) => setWebDavSettings({ ...webDavSettings, recoveryPassword: event.target.value })} />
+              </label>
+              <label className="inline-check"><input type="checkbox" checked={webDavSettings.encrypted} onChange={(event) => setWebDavSettings({ ...webDavSettings, encrypted: event.target.checked })} /> {t('encryptedBackups')}</label>
+              <label className="inline-check"><input type="checkbox" checked={webDavSettings.autoBackup} onChange={(event) => setWebDavSettings({ ...webDavSettings, autoBackup: event.target.checked })} /> {t('autoBackup')}</label>
+            </div>
+            <p className="privacy-note">{t('permissionDisclosure')}</p>
+            <div className="backup-actions">
+              <button type="button" onClick={() => void saveWebDavSettings(webDavSettings)}>{t('saveSettings')}</button>
+              <button type="button" onClick={() => void testWebDavConnection()}>{t('testConnection')}</button>
+              <button type="button" onClick={() => void runManualBackup()}>{t('manualBackup')}</button>
+              <button type="button" onClick={() => void listWebDavVersions()}>{t('listBackups')}</button>
+              <button type="button" onClick={() => void clearThumbnailCache()}>{t('clearThumbnailCache')}</button>
+              <button type="button" onClick={() => void regenerateThumbnailCache()}>{t('regenerateThumbnailCache')}</button>
+            </div>
+            {backupVersions.length > 0 && (
+              <div className="backup-versions">
+                <label>
+                  {t('restorePassword')}
+                  <input type="password" value={restorePassword} onChange={(event) => setRestorePassword(event.target.value)} />
+                </label>
+                <ul>
+                  {backupVersions.map((version) => (
+                    <li key={version.url}>
+                      <span>{version.name}</span>
+                      <span>{version.size} B</span>
+                      <button type="button" onClick={() => void restoreWebDavVersion(version)}>{t('restore')}</button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </section>
+        )}
         {!showTrash && visibleBookmarks.length > 0 && (
           <section className="bulk-actions" aria-label={t('bulkActions')}>
             <label><input type="checkbox" checked={selectedVisibleIds.length === visibleBookmarks.length} onChange={(event) => selectVisible(event.target.checked)} /> {t('selectVisible')}</label>
@@ -616,6 +815,7 @@ export default function App() {
                   <input type="checkbox" checked={selectedIds.has(bookmark.id)} onChange={(event) => toggleSelected(bookmark.id, event.target.checked)} />
                   {t('selectBookmark', { title: bookmark.title })}
                 </label>
+                {view === 'card' && <ThumbnailCover coverUrl={bookmark.coverUrl} title={bookmark.title} />}
                 <a href={bookmark.url} target="_blank" rel="noreferrer">{bookmark.title}</a>
                 <span className="url">{bookmark.url}</span>
                 {bookmark.metadataError && <span role="note">{t('metadataRefreshFailed', { reason: bookmark.metadataError })}</span>}

@@ -1,5 +1,11 @@
 html,
 body {
+  --ob-popup-width: 420px;
+  --ob-popup-min-height: 300px;
+  --ob-gap-s: 8px;
+  --ob-gap-m: 16px;
+  --ob-radius: 4px;
+  --ob-accent: hsl(207 80% 49%);
   width: 420px;
   min-height: 300px;
 }
@@ -35,7 +41,7 @@ section select {
   width: 100%;
   padding: 6px 8px;
   border: 1px solid #cfcfcf;
-  border-radius: 4px;
+  border-radius: var(--ob-radius);
   background: #fff;
 }
 
@@ -76,10 +82,20 @@ textarea {
 .primary {
   border-color: hsl(207 80% 44%);
   color: #fff;
-  background: hsl(207 80% 49%);
+  background: var(--ob-accent);
 }
 
 .status {
   min-height: 21px;
   margin: 8px 0 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }
