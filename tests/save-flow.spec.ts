@@ -1,8 +1,9 @@
 import { test, expect, chromium, type BrowserContext } from '@playwright/test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { parseBrowserBookmarksHtml } from '../lib/browser-html';
 
 const extensionPath = path.resolve('.output/chrome-mv3');
 let fixtureServer: Server;
@@ -521,6 +522,54 @@ test('Manager bulk edits selected bookmarks and refreshes metadata on demand', a
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('Manager imports and exports browser bookmark HTML', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  const files = await mkdtemp(path.join(tmpdir(), 'openbookmark-html-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    const importFile = path.join(files, 'bookmarks.html');
+    await writeFile(importFile, `<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<DL><p>
+  <DT><H3>Work</H3>
+  <DL><p>
+    <DT><H3>Nested</H3>
+    <DL><p>
+      <DT><A HREF="https://example.com/imported">Imported child</A>
+    </DL><p>
+    <DT><A>Broken child</A>
+  </DL><p>
+  <DT><A HREF="https://example.com/root">Imported root</A>
+</DL><p>`);
+
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+
+    await manager.getByLabel('Import browser HTML').setInputFiles(importFile);
+    await expect(manager.getByRole('status')).toHaveText('Browser import complete: 2/2, 1 skipped.');
+    await expect(manager.getByRole('link', { name: 'Imported root' })).toBeVisible();
+    await expect(manager.getByRole('link', { name: 'Imported child' })).toBeVisible();
+    await expect(manager.getByLabel('Collection for Imported child').locator('option:checked')).toHaveText('Work / Nested');
+
+    const downloadPromise = manager.waitForEvent('download');
+    await manager.getByRole('button', { name: 'Export browser HTML' }).click();
+    const download = await downloadPromise;
+    const exportedPath = await download.path();
+    expect(exportedPath).toBeTruthy();
+    const parsed = parseBrowserBookmarksHtml(await readFile(exportedPath!, 'utf8'));
+    expect(parsed.bookmarks.map(({ title, url, path }) => ({ title, url, path }))).toEqual([
+      { title: 'Imported root', url: 'https://example.com/root', path: [] },
+      { title: 'Imported child', url: 'https://example.com/imported', path: ['Work', 'Nested'] },
+    ]);
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+    await rm(files, { recursive: true, force: true });
   }
 });
 

@@ -98,6 +98,18 @@ const en = {
   refreshProgress: 'Metadata refresh: {done}/{total}, {succeeded} succeeded, {failed} failed.',
   refreshCanceled: 'Metadata refresh canceled: {done}/{total}, {succeeded} succeeded, {failed} failed.',
   metadataRefreshFailed: 'Metadata refresh failed: {reason}',
+  browserImportExport: 'Browser bookmark import and export',
+  importBrowserHtml: 'Import browser HTML',
+  cancelImport: 'Cancel import',
+  exportBrowserHtml: 'Export browser HTML',
+  browserImportParsing: 'Reading browser HTML: {processed} lines processed.',
+  browserImportProgress: 'Browser import: {imported}/{total}, {skipped} skipped.',
+  browserImportDone: 'Browser import complete: {imported}/{total}, {skipped} skipped.',
+  browserImportCanceled: 'Browser import canceled: {imported}/{total}, {skipped} skipped.',
+  browserImportFailed: 'Browser import failed. Your existing bookmarks were left available.',
+  browserExportDone: 'Exported {count} bookmarks.',
+  browserExportProgress: 'Browser export: {processed}/{total} bookmarks prepared.',
+  browserExportFailed: 'Browser export failed: {reason}',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -200,6 +212,18 @@ const zh: Record<MessageKey, string> = {
   refreshProgress: '元数据刷新：{done}/{total}，{succeeded} 个成功，{failed} 个失败。',
   refreshCanceled: '元数据刷新已取消：{done}/{total}，{succeeded} 个成功，{failed} 个失败。',
   metadataRefreshFailed: '元数据刷新失败：{reason}',
+  browserImportExport: '浏览器书签导入导出',
+  importBrowserHtml: '导入浏览器 HTML',
+  cancelImport: '取消导入',
+  exportBrowserHtml: '导出浏览器 HTML',
+  browserImportParsing: '正在读取浏览器 HTML：已处理 {processed} 行。',
+  browserImportProgress: '浏览器导入：{imported}/{total}，跳过 {skipped} 个。',
+  browserImportDone: '浏览器导入完成：{imported}/{total}，跳过 {skipped} 个。',
+  browserImportCanceled: '浏览器导入已取消：{imported}/{total}，跳过 {skipped} 个。',
+  browserImportFailed: '浏览器导入失败，现有书签仍可使用。',
+  browserExportDone: '已导出 {count} 个书签。',
+  browserExportProgress: '浏览器导出：已准备 {processed}/{total} 个书签。',
+  browserExportFailed: '浏览器导出失败：{reason}',
 };
 
 const messages = { en, zh };

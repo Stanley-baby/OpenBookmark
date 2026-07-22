@@ -31,6 +31,8 @@ export interface BookmarkInput {
   unread: boolean;
   collectionId: string | null;
   tags: string[];
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Collection {
@@ -171,7 +173,7 @@ export const bookmarkRepository = {
         tags: normalizeTags(input.tags),
         metadataError: null,
         normalizedUrl,
-        updatedAt: now,
+        updatedAt: input.updatedAt ?? now,
       };
 
       if (existing) {
@@ -180,7 +182,7 @@ export const bookmarkRepository = {
       }
 
       const id = crypto.randomUUID();
-      await db.bookmarks.add({ ...values, id, trashedAt: null, originalCollectionId: null, createdAt: now });
+      await db.bookmarks.add({ ...values, id, trashedAt: null, originalCollectionId: null, createdAt: input.createdAt ?? now });
       return { id, created: true };
     });
   },

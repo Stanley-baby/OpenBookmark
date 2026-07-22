@@ -115,6 +115,20 @@ h1 {
   padding: 0 0 16px;
 }
 
+.import-export {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 12px;
+  padding: 0 0 16px;
+}
+
+.import-export label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
 .bulk-actions label {
   display: grid;
   gap: 4px;

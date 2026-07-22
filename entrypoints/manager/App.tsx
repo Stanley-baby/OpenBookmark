@@ -11,6 +11,7 @@ import {
 } from '../../lib/bookmarks';
 import { type Locale, useI18n } from '../../lib/i18n';
 import { readDocumentMetadata } from '../../lib/metadata';
+import { parseBrowserBookmarksHtmlFile, pathKey, serializeBrowserBookmarksHtmlInBatches, type BrowserHtmlBookmark } from '../../lib/browser-html';
 
 type SortMode = 'newest' | 'oldest' | 'title';
 type ViewMode = 'list' | 'card';
@@ -47,8 +48,10 @@ export default function App() {
   const [bulkTags, setBulkTags] = useState('');
   const [bulkCollectionId, setBulkCollectionId] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [importing, setImporting] = useState(false);
   const refreshCancelRef = useRef(false);
   const refreshAbortRef = useRef<AbortController | null>(null);
+  const importCancelRef = useRef(false);
   const collectionLabels = useMemo(
     () => new Map(collections.map((collection) => [collection.id, collectionPath(collection, collections)])),
     [collections],
@@ -257,6 +260,111 @@ export default function App() {
     setManagerStatus(t('emptiedTrash'));
   }
 
+  function importedDate(seconds: string | null) {
+    if (!seconds) return undefined;
+    const value = Number(seconds);
+    return Number.isFinite(value) ? new Date(value * 1000).toISOString() : undefined;
+  }
+
+  function collectionTitlePath(collection: Collection, allCollections: Collection[]) {
+    const byId = new Map(allCollections.map((item) => [item.id, item]));
+    const titles = [collection.title];
+    let parent = collection.parentId ? byId.get(collection.parentId) : undefined;
+    while (parent) {
+      titles.unshift(parent.title);
+      parent = parent.parentId ? byId.get(parent.parentId) : undefined;
+    }
+    return titles;
+  }
+
+  async function collectionForImportPath(importedPath: string[]) {
+    const currentCollections = await collectionRepository.list();
+    const idsByPath = new Map<string, string>();
+    const addExisting = (collection: Collection) => {
+      idsByPath.set(pathKey(collectionTitlePath(collection, currentCollections)), collection.id);
+    };
+    currentCollections.forEach(addExisting);
+
+    let parentId: string | null = null;
+    const path: string[] = [];
+    for (const title of importedPath) {
+      path.push(title);
+      const key = pathKey(path);
+      let id = idsByPath.get(key);
+      if (!id) {
+        id = await collectionRepository.create(title, parentId);
+        idsByPath.set(key, id);
+      }
+      parentId = id;
+    }
+    return parentId;
+  }
+
+  async function importBrowserHtmlBookmark(bookmark: BrowserHtmlBookmark) {
+    await bookmarkRepository.save({
+      url: bookmark.url,
+      title: bookmark.title,
+      description: '',
+      coverUrl: '',
+      note: '',
+      favorite: false,
+      unread: false,
+      collectionId: await collectionForImportPath(bookmark.path),
+      tags: [],
+      createdAt: importedDate(bookmark.addDate),
+      updatedAt: importedDate(bookmark.lastModified),
+    });
+  }
+
+  async function importBrowserHtml(file: File | undefined) {
+    if (!file || importing) return;
+    setImporting(true);
+    importCancelRef.current = false;
+    try {
+      const parsed = await parseBrowserBookmarksHtmlFile(file, (processed) => {
+        setManagerStatus(t('browserImportParsing', { processed }));
+      });
+      let imported = 0;
+      let skipped = parsed.skipped.length;
+      for (const bookmark of parsed.bookmarks) {
+        if (importCancelRef.current) break;
+        try {
+          await importBrowserHtmlBookmark(bookmark);
+          imported += 1;
+        } catch {
+          skipped += 1;
+        }
+        setManagerStatus(t('browserImportProgress', { imported, total: parsed.bookmarks.length, skipped }));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      setManagerStatus(t(importCancelRef.current ? 'browserImportCanceled' : 'browserImportDone', {
+        imported,
+        total: parsed.bookmarks.length,
+        skipped,
+      }));
+    } catch {
+      setManagerStatus(t('browserImportFailed'));
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function exportBrowserHtml() {
+    try {
+      const html = await serializeBrowserBookmarksHtmlInBatches(collections, bookmarks, (processed, total) => {
+        setManagerStatus(t('browserExportProgress', { processed, total }));
+      });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([html], { type: 'text/html;charset=utf-8' }));
+      link.download = 'openbookmark-bookmarks.html';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 0);
+      setManagerStatus(t('browserExportDone', { count: bookmarks.length }));
+    } catch (error) {
+      setManagerStatus(t('browserExportFailed', { reason: error instanceof Error ? error.message : 'Could not create download' }));
+    }
+  }
+
   return (
     <div className="layout">
       <aside>
@@ -361,6 +469,16 @@ export default function App() {
             <label><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} /> {t('unreadOnly')}</label>
           </fieldset>
         </section>}
+        {!showTrash && (
+          <section className="import-export" aria-label={t('browserImportExport')}>
+            <label>
+              {t('importBrowserHtml')}
+              <input type="file" accept=".html,text/html" disabled={importing} onChange={(event) => void importBrowserHtml(event.currentTarget.files?.[0])} />
+            </label>
+            {importing && <button type="button" onClick={() => { importCancelRef.current = true; }}>{t('cancelImport')}</button>}
+            <button type="button" onClick={() => void exportBrowserHtml()}>{t('exportBrowserHtml')}</button>
+          </section>
+        )}
         {!showTrash && visibleBookmarks.length > 0 && (
           <section className="bulk-actions" aria-label={t('bulkActions')}>
             <label><input type="checkbox" checked={selectedVisibleIds.length === visibleBookmarks.length} onChange={(event) => selectVisible(event.target.checked)} /> {t('selectVisible')}</label>
