@@ -107,6 +107,32 @@ h1 {
   padding: 16px 0;
 }
 
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  padding: 0 0 16px;
+}
+
+.bulk-actions label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.bulk-actions label:first-child,
+.bookmark-select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.bulk-actions select,
+.bulk-actions input {
+  min-height: 32px;
+}
+
 .manager-controls > label {
   display: grid;
   gap: 4px;

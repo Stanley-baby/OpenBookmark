@@ -15,6 +15,7 @@ export interface Bookmark {
   tags: string[];
   trashedAt: string | null;
   originalCollectionId: string | null;
+  metadataError: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -137,6 +138,11 @@ class OpenBookmarkDatabase extends Dexie {
         bookmark.originalCollectionId ??= null;
       }),
     );
+    this.version(5).stores({ bookmarks: 'id,normalizedUrl,createdAt,collectionId,*tags,trashedAt', collections: 'id,parentId,title', tombstones: 'id,deletedAt' }).upgrade((transaction) =>
+      transaction.table<Bookmark>('bookmarks').toCollection().modify((bookmark) => {
+        bookmark.metadataError ??= null;
+      }),
+    );
   }
 }
 
@@ -163,6 +169,7 @@ export const bookmarkRepository = {
         unread: input.unread,
         collectionId: input.collectionId,
         tags: normalizeTags(input.tags),
+        metadataError: null,
         normalizedUrl,
         updatedAt: now,
       };
@@ -281,6 +288,62 @@ export const bookmarkRepository = {
 
   setTags(id: string, tags: string[]) {
     return db.bookmarks.update(id, { tags: normalizeTags(tags), updatedAt: new Date().toISOString() });
+  },
+
+  bulkSetCollection(ids: string[], collectionId: string | null) {
+    return db.bookmarks.where('id').anyOf(ids).modify({ collectionId, updatedAt: new Date().toISOString() });
+  },
+
+  bulkAddTags(ids: string[], tags: string[]) {
+    const additions = normalizeTags(tags);
+    if (!additions.length) return Promise.resolve(0);
+    return db.bookmarks.where('id').anyOf(ids).modify((bookmark) => {
+      bookmark.tags = normalizeTags([...bookmark.tags, ...additions]);
+      bookmark.updatedAt = new Date().toISOString();
+    });
+  },
+
+  bulkRemoveTags(ids: string[], tags: string[]) {
+    const removals = new Set(normalizeTags(tags).map((tag) => tag.toLocaleLowerCase()));
+    if (!removals.size) return Promise.resolve(0);
+    return db.bookmarks.where('id').anyOf(ids).modify((bookmark) => {
+      bookmark.tags = bookmark.tags.filter((tag) => !removals.has(tag.toLocaleLowerCase()));
+      bookmark.updatedAt = new Date().toISOString();
+    });
+  },
+
+  bulkSetFavorite(ids: string[], favorite: boolean) {
+    return db.bookmarks.where('id').anyOf(ids).modify({ favorite, updatedAt: new Date().toISOString() });
+  },
+
+  bulkSetUnread(ids: string[], unread: boolean) {
+    return db.bookmarks.where('id').anyOf(ids).modify({ unread, updatedAt: new Date().toISOString() });
+  },
+
+  bulkMoveToTrash(ids: string[], now = new Date()) {
+    const timestamp = now.toISOString();
+    return db.bookmarks.where('id').anyOf(ids).modify((bookmark) => {
+      if (bookmark.trashedAt) return;
+      bookmark.trashedAt = timestamp;
+      bookmark.originalCollectionId = bookmark.collectionId;
+      bookmark.updatedAt = timestamp;
+    });
+  },
+
+  async updateMetadata(id: string, metadata: { title: string; description: string; coverUrl: string }) {
+    const bookmark = await db.bookmarks.get(id);
+    if (!bookmark) return 0;
+    return db.bookmarks.update(id, {
+      title: metadata.title || bookmark.title,
+      description: metadata.description || bookmark.description,
+      coverUrl: metadata.coverUrl || bookmark.coverUrl,
+      metadataError: null,
+      updatedAt: new Date().toISOString(),
+    });
+  },
+
+  markMetadataRefreshFailed(id: string, metadataError: string) {
+    return db.bookmarks.update(id, { metadataError, updatedAt: new Date().toISOString() });
   },
 };
 

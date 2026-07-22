@@ -7,18 +7,31 @@ import path from 'node:path';
 const extensionPath = path.resolve('.output/chrome-mv3');
 let fixtureServer: Server;
 let fixtureUrl: string;
+let fixtureRequests = new Map<string, number>();
 
 test.beforeAll(async () => {
   fixtureServer = createServer((request, response) => {
+    const url = request.url ?? '/';
+    fixtureRequests.set(url, (fixtureRequests.get(url) ?? 0) + 1);
     response.setHeader('Content-Type', 'text/html');
-    if (request.url?.startsWith('/metadata')) {
+    if (url.startsWith('/metadata')) {
       response.end(`<!doctype html>
         <title>Document fallback</title>
         <meta name="twitter:title" content="Twitter title">
         <meta property="og:description" content="Open Graph description">
         <meta property="og:image" content="/cover.jpg">
         <h1>Metadata fixture</h1>`);
-    } else if (request.url?.startsWith('/broken')) {
+    } else if (url.startsWith('/slow-metadata')) {
+      const timer = setTimeout(() => response.end(`<!doctype html>
+        <title>Slow fallback</title>
+        <meta name="twitter:title" content="Should not refresh">`), 5_000);
+      request.on('close', () => clearTimeout(timer));
+    } else if (url.startsWith('/missing')) {
+      response.statusCode = 500;
+      response.end('<!doctype html><title>Broken refresh</title>');
+    } else if (url.startsWith('/empty-metadata')) {
+      response.end('<!doctype html><h1>No metadata here</h1>');
+    } else if (url.startsWith('/broken')) {
       response.end(`<!doctype html>
         <title>Fallback title</title>
         <script type="application/ld+json">{broken</script>
@@ -421,6 +434,90 @@ test('Manager searches every agreed field and combines filters', async () => {
     await expect(reopenedManager.getByLabel('Favorite only')).toBeChecked();
     await expect(reopenedManager.getByLabel('Unread only')).toBeChecked();
     await expect.poll(() => reopenedManager.locator('.bookmark-list > li > a').evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href))).toEqual(listLinks.slice(0, 2));
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('Manager bulk edits selected bookmarks and refreshes metadata on demand', async () => {
+  test.setTimeout(60_000);
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+  fixtureRequests = new Map();
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const fixture = await context.newPage();
+    const popup = await context.newPage();
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+
+    const saveBookmark = async (pathSuffix: string, title: string, tags: string) => {
+      await fixture.goto(`${fixtureUrl.replace('/bookmark', pathSuffix)}`);
+      if (popup.url() === 'about:blank') await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+      await fixture.bringToFront();
+      await popup.reload();
+      await popup.getByLabel('Title').fill(title);
+      await popup.getByLabel('Description').fill(`Old ${title}`);
+      await popup.getByLabel('Tags').fill(tags);
+      await popup.getByRole('button', { name: 'Save bookmark' }).click();
+      await expect(popup.getByRole('status')).toHaveText('Saved');
+    };
+
+    await saveBookmark('/metadata?bulk=alpha', 'Alpha old', 'red');
+    await saveBookmark('/metadata?bulk=beta', 'Beta old', 'red');
+    await saveBookmark('/metadata?bulk=gamma', 'Gamma old', 'blue');
+    await saveBookmark('/missing?bulk=broken', 'Broken old', 'red');
+    await saveBookmark('/empty-metadata?bulk=empty', 'Empty old', 'red');
+
+    await manager.getByRole('button', { name: 'red', exact: true }).click();
+    await manager.getByLabel('Select visible').check();
+    await manager.locator('.bulk-actions').getByLabel('Tags').fill('batched');
+    await manager.getByRole('button', { name: 'Add tags to selected' }).click();
+    await manager.getByRole('button', { name: 'Clear filter' }).click();
+    await expect(manager.getByLabel('Tags for Gamma old')).toHaveValue('blue');
+    await manager.getByRole('button', { name: 'batched', exact: true }).click();
+    await expect(manager.locator('.bookmark-list > li')).toHaveCount(4);
+
+    await manager.getByLabel('Select visible').check();
+    await manager.getByRole('button', { name: 'Move selected to Trash' }).click();
+    await expect(manager.getByRole('status')).toHaveText('Moved 4 bookmarks to Trash.');
+    await manager.getByRole('button', { name: 'Trash', exact: true }).click();
+    for (const title of ['Alpha old', 'Beta old', 'Broken old', 'Empty old']) {
+      await manager.getByRole('button', { name: `Restore ${title}` }).click();
+    }
+    await manager.getByRole('button', { name: 'All bookmarks' }).click();
+
+    const alphaBeforeRefresh = fixtureRequests.get('/metadata?bulk=alpha') ?? 0;
+    await manager.getByLabel('Sort bookmarks').selectOption('oldest');
+    await manager.getByLabel('Select Alpha old').check();
+    await manager.getByLabel('Select Broken old').check();
+    await manager.getByLabel('Select Empty old').check();
+    await expect.poll(() => fixtureRequests.get('/metadata?bulk=alpha') ?? 0).toBe(alphaBeforeRefresh);
+    await manager.getByRole('button', { name: 'Refresh metadata' }).click();
+    await expect(manager.getByRole('status')).toContainText('Metadata refresh: 3/3, 1 succeeded, 2 failed.');
+    await expect(manager.getByRole('link', { name: 'Twitter title' })).toBeVisible();
+    await expect(manager.getByLabel('Tags for Broken old')).toHaveValue('red, batched');
+    await expect(manager.getByLabel('Tags for Empty old')).toHaveValue('red, batched');
+    await expect(manager.getByLabel('Tags for Empty old')).toBeVisible();
+    await expect(manager.getByRole('link', { name: 'Empty old' })).toBeVisible();
+    await expect(manager.getByText('Metadata refresh failed: HTTP 500')).toBeVisible();
+    await expect(manager.getByText('Metadata refresh failed: No readable metadata')).toBeVisible();
+    await expect(manager.getByLabel('Tags for Twitter title')).toHaveValue('red, batched');
+
+    await saveBookmark('/metadata?bulk=cancel-one', 'Cancel one old', 'cancel');
+    await saveBookmark('/slow-metadata?bulk=cancel-two', 'Cancel two old', 'cancel');
+    await saveBookmark('/metadata?bulk=cancel-three', 'Cancel three old', 'cancel');
+    await manager.getByRole('button', { name: 'cancel', exact: true }).click();
+    await manager.getByLabel('Sort bookmarks').selectOption('oldest');
+    await manager.getByLabel('Select visible').check();
+    await manager.getByRole('button', { name: 'Refresh metadata' }).click();
+    await expect(manager.getByRole('status')).toContainText('Metadata refresh: 1/3, 1 succeeded, 0 failed.');
+    await manager.getByRole('button', { name: 'Cancel refresh' }).click();
+    await expect(manager.getByRole('status')).toContainText('Metadata refresh canceled: 1/3, 1 succeeded, 0 failed.');
+    await expect(manager.getByRole('link', { name: 'Should not refresh' })).toHaveCount(0);
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });

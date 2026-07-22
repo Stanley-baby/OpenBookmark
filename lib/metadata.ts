@@ -4,10 +4,10 @@ export interface PageMetadata {
   coverUrl: string;
 }
 
-export function readPageMetadata(): PageMetadata {
+export function readDocumentMetadata(source = document, baseUrl = document.baseURI): PageMetadata {
   const meta = (...selectors: string[]) => {
     for (const selector of selectors) {
-      const content = document.querySelector<HTMLMetaElement>(selector)?.content.trim();
+      const content = source.querySelector<HTMLMetaElement>(selector)?.content.trim();
       if (content) return content;
     }
     return '';
@@ -17,7 +17,7 @@ export function readPageMetadata(): PageMetadata {
   let jsonDescription = '';
   let jsonImage = '';
 
-  for (const script of document.querySelectorAll<HTMLScriptElement>('script[type="application/ld+json"]')) {
+  for (const script of source.querySelectorAll<HTMLScriptElement>('script[type="application/ld+json"]')) {
     try {
       const parsed: unknown = JSON.parse(script.textContent || 'null');
       const roots = Array.isArray(parsed) ? parsed : [parsed];
@@ -42,7 +42,7 @@ export function readPageMetadata(): PageMetadata {
     }
   }
 
-  const imageCandidate = Array.from(document.images).find((image) => {
+  const imageCandidate = Array.from(source.images).find((image) => {
     const source = image.currentSrc || image.src;
     if (!source || /\.svg(?:$|[?#])/i.test(source) || image.closest('header, footer, aside')) return false;
     const style = getComputedStyle(image);
@@ -52,8 +52,10 @@ export function readPageMetadata(): PageMetadata {
 
   const cover = meta('meta[name="twitter:image"]', 'meta[property="og:image"]') || jsonImage || imageCandidate?.currentSrc || imageCandidate?.src || '';
   return {
-    title: (meta('meta[name="twitter:title"]', 'meta[property="og:title"]') || jsonTitle || document.title).slice(0, 1_000),
+    title: (meta('meta[name="twitter:title"]', 'meta[property="og:title"]') || jsonTitle || source.title).slice(0, 1_000),
     description: (meta('meta[name="twitter:description"]', 'meta[property="og:description"]', 'meta[name="description"]') || jsonDescription).slice(0, 10_000),
-    coverUrl: cover ? new URL(cover, document.baseURI).href : '',
+    coverUrl: cover ? new URL(cover, baseUrl).href : '',
   };
 }
+
+export const readPageMetadata = readDocumentMetadata;

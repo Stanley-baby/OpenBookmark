@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
   bookmarkRepository,
@@ -10,6 +10,7 @@ import {
   type Collection,
 } from '../../lib/bookmarks';
 import { type Locale, useI18n } from '../../lib/i18n';
+import { readDocumentMetadata } from '../../lib/metadata';
 
 type SortMode = 'newest' | 'oldest' | 'title';
 type ViewMode = 'list' | 'card';
@@ -40,8 +41,14 @@ export default function App() {
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
-  const [trashStatus, setTrashStatus] = useState('');
+  const [managerStatus, setManagerStatus] = useState('');
   const [trashCleanupFailed, setTrashCleanupFailed] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkTags, setBulkTags] = useState('');
+  const [bulkCollectionId, setBulkCollectionId] = useState('');
+  const [refreshing, setRefreshing] = useState(false);
+  const refreshCancelRef = useRef(false);
+  const refreshAbortRef = useRef<AbortController | null>(null);
   const collectionLabels = useMemo(
     () => new Map(collections.map((collection) => [collection.id, collectionPath(collection, collections)])),
     [collections],
@@ -120,6 +127,11 @@ export default function App() {
   }, [bookmarks, collectionFilter, favoriteOnly, locale, search, sort, tagFilter, unreadOnly]);
   const tags = useMemo(() => [...new Set(bookmarks.flatMap((bookmark) => bookmark.tags))].sort(), [bookmarks]);
   const dateFormat = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' });
+  const selectedVisibleIds = useMemo(() => visibleBookmarks.filter((bookmark) => selectedIds.has(bookmark.id)).map((bookmark) => bookmark.id), [selectedIds, visibleBookmarks]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [collectionFilter, favoriteOnly, search, showTrash, tagFilter, unreadOnly]);
 
   async function createCollection(form: HTMLFormElement) {
     const data = new FormData(form);
@@ -150,14 +162,83 @@ export default function App() {
     setUnreadOnly(false);
   }
 
+  function toggleSelected(id: string, selected: boolean) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
+
+  function selectVisible(selected: boolean) {
+    setSelectedIds(selected ? new Set(visibleBookmarks.map((bookmark) => bookmark.id)) : new Set());
+  }
+
+  async function applyBulk(action: 'collection' | 'addTags' | 'removeTags' | 'favorite' | 'notFavorite' | 'unread' | 'read' | 'trash') {
+    const ids = selectedVisibleIds;
+    if (!ids.length) return;
+    if (action === 'collection') await bookmarkRepository.bulkSetCollection(ids, bulkCollectionId || null);
+    if (action === 'addTags') await bookmarkRepository.bulkAddTags(ids, bulkTags.split(','));
+    if (action === 'removeTags') await bookmarkRepository.bulkRemoveTags(ids, bulkTags.split(','));
+    if (action === 'favorite') await bookmarkRepository.bulkSetFavorite(ids, true);
+    if (action === 'notFavorite') await bookmarkRepository.bulkSetFavorite(ids, false);
+    if (action === 'unread') await bookmarkRepository.bulkSetUnread(ids, true);
+    if (action === 'read') await bookmarkRepository.bulkSetUnread(ids, false);
+    if (action === 'trash') {
+      await bookmarkRepository.bulkMoveToTrash(ids);
+      setManagerStatus(t('bulkMovedToTrash', { count: ids.length }));
+    }
+    setSelectedIds(new Set());
+  }
+
+  async function refreshSelectedMetadata() {
+    const ids = selectedVisibleIds;
+    if (!ids.length || refreshing) return;
+    setRefreshing(true);
+    refreshCancelRef.current = false;
+    let done = 0;
+    let succeeded = 0;
+    let failed = 0;
+    for (const id of ids) {
+      if (refreshCancelRef.current) break;
+      const bookmark = bookmarks.find((item) => item.id === id);
+      if (!bookmark) continue;
+      const controller = new AbortController();
+      refreshAbortRef.current = controller;
+      try {
+        const response = await fetch(bookmark.url, { signal: controller.signal });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const html = await response.text();
+        const parsed = new DOMParser().parseFromString(html, 'text/html');
+        const metadata = readDocumentMetadata(parsed, bookmark.url);
+        if (!metadata.title.trim()) throw new Error('No readable metadata');
+        await bookmarkRepository.updateMetadata(id, metadata);
+        succeeded += 1;
+      } catch (error) {
+        if (refreshCancelRef.current) break;
+        failed += 1;
+        await bookmarkRepository.markMetadataRefreshFailed(id, error instanceof Error ? error.message : String(error));
+      } finally {
+        refreshAbortRef.current = null;
+      }
+      done += 1;
+      setManagerStatus(t('refreshProgress', { done, total: ids.length, succeeded, failed }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    setManagerStatus(t(refreshCancelRef.current ? 'refreshCanceled' : 'refreshProgress', { done, total: ids.length, succeeded, failed }));
+    setRefreshing(false);
+    setSelectedIds(new Set());
+  }
+
   async function moveToTrash(bookmark: Bookmark) {
     await bookmarkRepository.moveToTrash(bookmark.id);
-    setTrashStatus(t('movedToTrash', { title: bookmark.title }));
+    setManagerStatus(t('movedToTrash', { title: bookmark.title }));
   }
 
   async function restoreBookmark(bookmark: Bookmark) {
     const result = await bookmarkRepository.restore(bookmark.id);
-    setTrashStatus(result.duplicate
+    setManagerStatus(result.duplicate
       ? t('restoreDuplicate')
       : result.restoredToUnsorted
         ? t('restoredToUnsorted')
@@ -167,13 +248,13 @@ export default function App() {
   async function permanentlyDelete(bookmark: Bookmark) {
     if (!confirm(t('confirmPermanentDelete', { title: bookmark.title }))) return;
     await bookmarkRepository.permanentlyDelete(bookmark.id);
-    setTrashStatus(t('permanentlyDeleted', { title: bookmark.title }));
+    setManagerStatus(t('permanentlyDeleted', { title: bookmark.title }));
   }
 
   async function emptyTrash() {
     if (!confirm(t('confirmEmptyTrash', { count: trashedBookmarks.length }))) return;
     await bookmarkRepository.emptyTrash();
-    setTrashStatus(t('emptiedTrash'));
+    setManagerStatus(t('emptiedTrash'));
   }
 
   return (
@@ -280,7 +361,35 @@ export default function App() {
             <label><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} /> {t('unreadOnly')}</label>
           </fieldset>
         </section>}
-        <p className="manager-status" role="status">{trashStatus}</p>
+        {!showTrash && visibleBookmarks.length > 0 && (
+          <section className="bulk-actions" aria-label={t('bulkActions')}>
+            <label><input type="checkbox" checked={selectedVisibleIds.length === visibleBookmarks.length} onChange={(event) => selectVisible(event.target.checked)} /> {t('selectVisible')}</label>
+            <span>{t('selectedCount', { count: selectedVisibleIds.length })}</span>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => selectVisible(false)}>{t('clearSelection')}</button>
+            <label>
+              {t('bulkMoveToCollection')}
+              <select value={bulkCollectionId} disabled={!selectedVisibleIds.length} onChange={(event) => setBulkCollectionId(event.target.value)}>
+                <option value="">{t('unsorted')}</option>
+                {collections.map((collection) => <option key={collection.id} value={collection.id}>{collectionLabels.get(collection.id)}</option>)}
+              </select>
+            </label>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('collection')}>{t('apply')}</button>
+            <label>
+              {t('tags')}
+              <input value={bulkTags} disabled={!selectedVisibleIds.length} onChange={(event) => setBulkTags(event.target.value)} />
+            </label>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('addTags')}>{t('bulkAddTags')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('removeTags')}>{t('bulkRemoveTags')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('favorite')}>{t('bulkMarkFavorite')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('notFavorite')}>{t('bulkClearFavorite')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('unread')}>{t('bulkMarkUnread')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('read')}>{t('bulkClearUnread')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length} onClick={() => void applyBulk('trash')}>{t('bulkMoveToTrash')}</button>
+            <button type="button" disabled={!selectedVisibleIds.length || refreshing} onClick={() => void refreshSelectedMetadata()}>{t('refreshMetadata')}</button>
+            {refreshing && <button type="button" onClick={() => { refreshCancelRef.current = true; refreshAbortRef.current?.abort(); }}>{t('cancelRefresh')}</button>}
+          </section>
+        )}
+        <p className="manager-status" role="status">{managerStatus}</p>
         {trashCleanupFailed && <p role="alert">{t('trashCleanupError')}</p>}
 
         {failed ? <p role="alert">{t('loadError')}</p> : showTrash ? (
@@ -309,8 +418,13 @@ export default function App() {
           <ul className={`bookmark-list ${view}-view`} aria-label={t('manager')}>
             {visibleBookmarks.map((bookmark) => (
               <li key={bookmark.id}>
+                <label className="bookmark-select">
+                  <input type="checkbox" checked={selectedIds.has(bookmark.id)} onChange={(event) => toggleSelected(bookmark.id, event.target.checked)} />
+                  {t('selectBookmark', { title: bookmark.title })}
+                </label>
                 <a href={bookmark.url} target="_blank" rel="noreferrer">{bookmark.title}</a>
                 <span className="url">{bookmark.url}</span>
+                {bookmark.metadataError && <span role="note">{t('metadataRefreshFailed', { reason: bookmark.metadataError })}</span>}
                 <label>
                   {t('collection')}
                   <select
