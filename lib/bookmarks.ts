@@ -44,7 +44,7 @@ export interface Collection {
   updatedAt: string;
 }
 
-interface DeletionMarker {
+export interface DeletionMarker {
   id: string;
   normalizedUrl: string;
   deletedAt: string;
@@ -200,6 +200,14 @@ export const bookmarkRepository = {
       .sort((a, b) => b.trashedAt!.localeCompare(a.trashedAt!));
   },
 
+  listAll() {
+    return db.bookmarks.toArray();
+  },
+
+  listTombstones() {
+    return db.tombstones.toArray();
+  },
+
   watch() {
     return liveQuery(() => this.list());
   },
@@ -346,6 +354,17 @@ export const bookmarkRepository = {
 
   markMetadataRefreshFailed(id: string, metadataError: string) {
     return db.bookmarks.update(id, { metadataError, updatedAt: new Date().toISOString() });
+  },
+
+  restoreBackup(bookmarks: Bookmark[], collections: Collection[], tombstones: DeletionMarker[]) {
+    return db.transaction('rw', db.bookmarks, db.collections, db.tombstones, async () => {
+      await db.bookmarks.clear();
+      await db.collections.clear();
+      await db.tombstones.clear();
+      await db.collections.bulkPut(collections);
+      await db.bookmarks.bulkPut(bookmarks);
+      await db.tombstones.bulkPut(tombstones);
+    });
   },
 };
 

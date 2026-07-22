@@ -110,6 +110,13 @@ const en = {
   browserExportDone: 'Exported {count} bookmarks.',
   browserExportProgress: 'Browser export: {processed}/{total} bookmarks prepared.',
   browserExportFailed: 'Browser export failed: {reason}',
+  restoreOpenBookmarkJson: 'Restore OpenBookmark JSON',
+  exportOpenBookmarkJson: 'Export OpenBookmark JSON',
+  confirmJsonRestore: 'Restore {bookmarks} bookmarks and {collections} collections from this JSON? This replaces current local data.',
+  jsonRestoreDone: 'JSON restore complete: {bookmarks} bookmarks, {collections} collections.',
+  jsonRestoreFailed: 'JSON restore failed: {reason}',
+  jsonExportDone: 'JSON export complete: {bookmarks} bookmarks, {collections} collections.',
+  jsonExportFailed: 'JSON export failed: {reason}',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -224,6 +231,13 @@ const zh: Record<MessageKey, string> = {
   browserExportDone: '已导出 {count} 个书签。',
   browserExportProgress: '浏览器导出：已准备 {processed}/{total} 个书签。',
   browserExportFailed: '浏览器导出失败：{reason}',
+  restoreOpenBookmarkJson: '恢复 OpenBookmark JSON',
+  exportOpenBookmarkJson: '导出 OpenBookmark JSON',
+  confirmJsonRestore: '确定从此 JSON 恢复 {bookmarks} 个书签和 {collections} 个收藏夹吗？这会替换当前本地数据。',
+  jsonRestoreDone: 'JSON 恢复完成：{bookmarks} 个书签，{collections} 个收藏夹。',
+  jsonRestoreFailed: 'JSON 恢复失败：{reason}',
+  jsonExportDone: 'JSON 导出完成：{bookmarks} 个书签，{collections} 个收藏夹。',
+  jsonExportFailed: 'JSON 导出失败：{reason}',
 };
 
 const messages = { en, zh };

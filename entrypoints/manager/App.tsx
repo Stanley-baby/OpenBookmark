@@ -12,6 +12,7 @@ import {
 import { type Locale, useI18n } from '../../lib/i18n';
 import { readDocumentMetadata } from '../../lib/metadata';
 import { parseBrowserBookmarksHtmlFile, pathKey, serializeBrowserBookmarksHtmlInBatches, type BrowserHtmlBookmark } from '../../lib/browser-html';
+import { exportOpenBookmarkJson, parseOpenBookmarkJson } from '../../lib/openbookmark-json';
 
 type SortMode = 'newest' | 'oldest' | 'title';
 type ViewMode = 'list' | 'card';
@@ -349,6 +350,42 @@ export default function App() {
     }
   }
 
+  async function restoreOpenBookmarkJson(file: File | undefined) {
+    if (!file) return;
+    try {
+      const data = parseOpenBookmarkJson(JSON.parse(await file.text()));
+      if (!confirm(t('confirmJsonRestore', { bookmarks: data.bookmarks.length, collections: data.collections.length }))) return;
+      await bookmarkRepository.restoreBackup(data.bookmarks, data.collections, data.tombstones);
+      await browser.storage.local.set({
+        locale: data.settings.locale,
+        managerPreferences: data.settings.managerPreferences,
+      });
+      setManagerStatus(t('jsonRestoreDone', { bookmarks: data.bookmarks.length, collections: data.collections.length }));
+    } catch (error) {
+      setManagerStatus(t('jsonRestoreFailed', { reason: error instanceof Error ? error.message : 'Invalid JSON' }));
+    }
+  }
+
+  async function exportOpenBookmarkData() {
+    try {
+      const allBookmarks = await bookmarkRepository.listAll();
+      const tombstones = await bookmarkRepository.listTombstones();
+      const stored = await browser.storage.local.get(['locale', 'managerPreferences']);
+      const json = JSON.stringify(exportOpenBookmarkJson(collections, allBookmarks, tombstones, {
+        locale: stored.locale === 'en' || stored.locale === 'zh' ? stored.locale : null,
+        managerPreferences: stored.managerPreferences ?? null,
+      }), null, 2);
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(new Blob([json], { type: 'application/json;charset=utf-8' }));
+      link.download = 'openbookmark-data.json';
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 0);
+      setManagerStatus(t('jsonExportDone', { bookmarks: allBookmarks.length, collections: collections.length }));
+    } catch (error) {
+      setManagerStatus(t('jsonExportFailed', { reason: error instanceof Error ? error.message : 'Could not create download' }));
+    }
+  }
+
   async function exportBrowserHtml() {
     try {
       const html = await serializeBrowserBookmarksHtmlInBatches(collections, bookmarks, (processed, total) => {
@@ -477,6 +514,11 @@ export default function App() {
             </label>
             {importing && <button type="button" onClick={() => { importCancelRef.current = true; }}>{t('cancelImport')}</button>}
             <button type="button" onClick={() => void exportBrowserHtml()}>{t('exportBrowserHtml')}</button>
+            <label>
+              {t('restoreOpenBookmarkJson')}
+              <input type="file" accept=".json,application/json" onChange={(event) => void restoreOpenBookmarkJson(event.currentTarget.files?.[0])} />
+            </label>
+            <button type="button" onClick={() => void exportOpenBookmarkData()}>{t('exportOpenBookmarkJson')}</button>
           </section>
         )}
         {!showTrash && visibleBookmarks.length > 0 && (
