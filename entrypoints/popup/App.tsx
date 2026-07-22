@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { bookmarkRepository, collectionRepository, type BookmarkInput, type Collection } from '../../lib/bookmarks';
+import { bookmarkRepository, collectionPath, collectionRepository, type BookmarkInput, type Collection } from '../../lib/bookmarks';
 import { type Locale, useI18n } from '../../lib/i18n';
 import { readPageMetadata } from '../../lib/metadata';
 
@@ -9,12 +9,15 @@ export default function App() {
   const [page, setPage] = useState<BookmarkInput>();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [status, setStatus] = useState<'idle' | 'saving' | 'saved' | 'updated' | 'error'>('idle');
+  const collectionPaths = useMemo(
+    () => new Map(collections.map((collection) => [collection.id, collectionPath(collection, collections)])),
+    [collections],
+  );
 
   useEffect(() => {
     let active = true;
+    let bookmarkSubscription: { unsubscribe(): void } | undefined;
     async function loadPage() {
-      const availableCollections = await collectionRepository.list();
-      if (active) setCollections(availableCollections);
       const requestedTabId = Number(new URLSearchParams(location.search).get('tabId'));
       const tab = Number.isInteger(requestedTabId) && requestedTabId > 0
         ? await browser.tabs.get(requestedTabId)
@@ -22,6 +25,14 @@ export default function App() {
       if (!active || !tab?.url || !/^https?:/.test(tab.url)) return;
 
       const existing = await bookmarkRepository.findByUrl(tab.url);
+      bookmarkSubscription = bookmarkRepository.watchByUrl(tab.url).subscribe({
+        next: (storedBookmark) => {
+          if (!active || !storedBookmark) return;
+          setPage((current) => current
+            ? { ...current, collectionId: storedBookmark.collectionId, tags: storedBookmark.tags }
+            : storedBookmark);
+        },
+      });
       if (existing) {
         setPage(existing);
         return;
@@ -36,10 +47,11 @@ export default function App() {
           // URL and tab title remain editable when page metadata cannot be read.
         }
       }
-      if (active) setPage({ ...metadata, url: tab.url, note: '', favorite: false, unread: false, collectionId: null });
+      if (active) setPage({ ...metadata, url: tab.url, note: '', favorite: false, unread: false, collectionId: null, tags: [] });
     }
+    const subscription = collectionRepository.watch().subscribe({ next: setCollections });
     void loadPage();
-    return () => { active = false; };
+    return () => { active = false; subscription.unsubscribe(); bookmarkSubscription?.unsubscribe(); };
   }, []);
 
   async function save() {
@@ -101,8 +113,12 @@ export default function App() {
               {t('collection')}
               <select value={page.collectionId ?? ''} onChange={(event) => setPage({ ...page, collectionId: event.target.value || null })}>
                 <option value="">{t('unsorted')}</option>
-                {collections.map((collection) => <option key={collection.id} value={collection.id}>{collection.title}</option>)}
+                {collections.map((collection) => <option key={collection.id} value={collection.id}>{collectionPaths.get(collection.id)}</option>)}
               </select>
+            </label>
+            <label>
+              {t('tags')}
+              <input value={page.tags.join(', ')} onChange={(event) => setPage({ ...page, tags: event.target.value.split(',') })} />
             </label>
             <div className="checks">
               <label><input type="checkbox" checked={page.favorite} onChange={(event) => setPage({ ...page, favorite: event.target.checked })} /> {t('favorite')}</label>

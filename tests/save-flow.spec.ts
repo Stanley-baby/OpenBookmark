@@ -165,3 +165,143 @@ test('metadata is editable and malformed metadata falls back to the document', a
     await rm(profile, { recursive: true, force: true });
   }
 });
+
+test('collections stay in sync, reject cycles, and persist organization', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+    const fixture = await context.newPage();
+    await fixture.goto(fixtureUrl);
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await fixture.bringToFront();
+    await popup.reload();
+
+    const createCollection = async (title: string, parent = 'Unsorted') => {
+      await manager.getByLabel('New collection name').fill(title);
+      await manager.getByLabel('Parent collection').selectOption({ label: parent });
+      await manager.getByRole('button', { name: 'Create collection' }).click();
+      await expect(manager.getByRole('button', { name: title, exact: true })).toBeVisible();
+    };
+    await createCollection('Inbox');
+    await createCollection('Projects', 'Inbox');
+    await createCollection('Reading', 'Inbox / Projects');
+    await createCollection('Archive');
+
+    await expect(popup.getByLabel('Collection').getByRole('option', { name: 'Inbox / Projects / Reading' })).toBeAttached();
+    await manager.getByLabel('Parent for Projects').selectOption({ label: 'Archive' });
+    await expect(popup.getByLabel('Collection').getByRole('option', { name: 'Archive / Projects / Reading' })).toBeAttached();
+    await expect(manager.getByLabel('Parent for Archive').getByRole('option', { name: 'Archive / Projects', exact: true })).toHaveAttribute('disabled');
+
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Collection').selectOption({ label: 'Archive / Projects / Reading' });
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+    await expect(manager.getByLabel('Collection for Offline fixture')).toHaveValue(await popup.getByLabel('Collection').inputValue());
+    await manager.getByLabel('Collection for Offline fixture').selectOption({ label: 'Inbox' });
+    await expect(popup.getByLabel('Collection')).toHaveValue(await manager.getByLabel('Collection for Offline fixture').inputValue());
+    await manager.getByRole('button', { name: 'Move Archive up' }).click();
+    await expect(manager.locator('.collection-item > button[data-collection-id]').first()).toHaveText('Archive');
+    await createCollection('Notes', 'Archive');
+    await manager.getByLabel('Parent for Projects').selectOption({ label: 'Inbox' });
+    await manager.getByLabel('Parent for Projects').selectOption({ label: 'Archive' });
+    await manager.getByRole('button', { name: 'Move Projects up' }).click();
+    await expect(manager.locator('.collection-item > button[data-collection-id]').nth(1)).toHaveText('Projects');
+
+    manager.once('dialog', async (dialog) => {
+      expect(dialog.type()).toBe('prompt');
+      await dialog.accept('Library');
+    });
+    await manager.getByRole('button', { name: 'Rename Archive' }).click();
+    await expect(manager.getByRole('button', { name: 'Library', exact: true })).toBeVisible();
+    await manager.getByLabel('Language').selectOption('zh');
+    await expect(manager.getByLabel('Projects 的父收藏夹')).toBeVisible();
+    await manager.getByLabel('语言').selectOption('en');
+    await context.close();
+    context = undefined;
+
+    context = await launch(profile);
+    const reopenedExtensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const reopenedManager = await context.newPage();
+    await reopenedManager.goto(`chrome-extension://${reopenedExtensionId}/manager.html`);
+    await expect(reopenedManager.getByRole('button', { name: 'Library', exact: true })).toBeVisible();
+    const libraryId = await reopenedManager.getByRole('button', { name: 'Library', exact: true }).getAttribute('data-collection-id');
+    expect(libraryId).not.toBeNull();
+    await expect(reopenedManager.getByLabel('Parent for Projects')).toHaveValue(
+      libraryId!,
+    );
+    await expect(reopenedManager.getByLabel('Collection for Offline fixture').locator('option:checked')).toHaveText('Inbox');
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('safe collection deletion preserves bookmarks and normalized tags', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+    await manager.getByLabel('New collection name').fill('Temporary');
+    await manager.getByRole('button', { name: 'Create collection' }).click();
+    await expect(manager.getByRole('button', { name: 'Temporary', exact: true })).toBeVisible();
+
+    const fixture = await context.newPage();
+    await fixture.goto(fixtureUrl);
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Collection').selectOption({ label: 'Temporary' });
+    await popup.getByLabel('Tags').fill(' research, research , work ');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    await expect(manager.getByLabel('Tags for Offline fixture')).toHaveValue('research, work');
+    await manager.getByRole('button', { name: 'Remove work from Offline fixture' }).click();
+    await expect(manager.getByLabel('Tags for Offline fixture')).toHaveValue('research');
+    await manager.getByLabel('Tags for Offline fixture').fill('work, work, research');
+    await manager.getByRole('button', { name: 'Update tags' }).click();
+    await expect(manager.getByLabel('Tags for Offline fixture')).toHaveValue('work, research');
+    await manager.getByRole('button', { name: 'research', exact: true }).click();
+    await expect(manager.getByRole('link', { name: 'Offline fixture' })).toBeVisible();
+
+    const cancelledDelete = manager.waitForEvent('dialog');
+    await manager.getByRole('button', { name: 'Delete Temporary' }).click({ noWaitAfter: true });
+    const cancelledDialog = await cancelledDelete;
+    expect(cancelledDialog.message()).toContain('1 bookmark');
+    await cancelledDialog.dismiss();
+    await expect(manager.getByRole('button', { name: 'Temporary', exact: true })).toBeVisible();
+    await expect(manager.getByLabel('Collection for Offline fixture').locator('option:checked')).toHaveText('Temporary');
+
+    const confirmedDelete = manager.waitForEvent('dialog');
+    await manager.getByRole('button', { name: 'Delete Temporary' }).click({ noWaitAfter: true });
+    await (await confirmedDelete).accept();
+    await expect(manager.getByRole('button', { name: 'Temporary', exact: true })).toHaveCount(0);
+    await expect(manager.getByRole('link', { name: 'Offline fixture' })).toBeVisible();
+    await expect(manager.getByLabel('Collection for Offline fixture').locator('option:checked')).toHaveText('Unsorted');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+    await expect(manager.getByLabel('Collection for Offline fixture').locator('option:checked')).toHaveText('Unsorted');
+    await context.close();
+    context = undefined;
+
+    context = await launch(profile);
+    const reopenedExtensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const reopenedManager = await context.newPage();
+    await reopenedManager.goto(`chrome-extension://${reopenedExtensionId}/manager.html`);
+    await reopenedManager.getByRole('button', { name: 'research', exact: true }).click();
+    await expect(reopenedManager.getByRole('link', { name: 'Offline fixture' })).toBeVisible();
+    await expect(reopenedManager.getByLabel('Tags for Offline fixture')).toHaveValue('work, research');
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});

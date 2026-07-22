@@ -15,6 +15,81 @@ aside {
   font-size: 16px;
 }
 
+aside section {
+  margin-top: 24px;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.collections form,
+.collection-item,
+.bookmark-tags {
+  display: grid;
+  gap: 8px;
+}
+
+.collections form {
+  margin: 12px 0;
+}
+
+.collections label,
+.bookmark-list label {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.collections input,
+.collections select,
+.bookmark-list input,
+.bookmark-list select {
+  width: 100%;
+  min-height: 32px;
+}
+
+.collection-list,
+.bookmark-list {
+  display: grid;
+  gap: 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.collection-item {
+  padding: 8px 0;
+  border-top: 1px solid #ddd;
+}
+
+.collection-item > button {
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.collection-item > button.selected {
+  font-weight: 700;
+}
+
+.collection-actions,
+.tag-list,
+.bookmark-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.collection-actions button,
+.tag-list button,
+.bookmark-tag-list button {
+  min-height: 28px;
+}
+
 main {
   padding: 24px;
 }
@@ -24,14 +99,7 @@ h1 {
   font-size: 20px;
 }
 
-ul {
-  display: grid;
-  gap: 12px;
-  padding: 0;
-  list-style: none;
-}
-
-li {
+.bookmark-list > li {
   display: grid;
   gap: 4px;
   padding: 16px;
@@ -39,7 +107,7 @@ li {
   border-radius: 4px;
 }
 
-li a {
+.bookmark-list a {
   width: fit-content;
   color: hsl(207 80% 40%);
   font-size: 15px;

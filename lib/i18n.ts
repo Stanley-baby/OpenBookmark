@@ -27,6 +27,24 @@ const en = {
   empty: 'No bookmarks yet.',
   created: 'Saved',
   loadError: 'Could not load bookmarks.',
+  collections: 'Collections',
+  allBookmarks: 'All bookmarks',
+  newCollectionName: 'New collection name',
+  parentCollection: 'Parent collection',
+  createCollection: 'Create collection',
+  tags: 'Tags',
+  updateTags: 'Update tags',
+  clearFilter: 'Clear filter',
+  parentFor: 'Parent for {title}',
+  moveUp: 'Move {title} up',
+  moveDown: 'Move {title} down',
+  renameCollection: 'Rename {title}',
+  deleteCollection: 'Delete {title}',
+  collectionFor: 'Collection for {title}',
+  tagsFor: 'Tags for {title}',
+  removeTagFrom: 'Remove {tag} from {title}',
+  renameCollectionPrompt: 'Rename collection',
+  deleteImpact: 'Deleting “{title}” moves {bookmarks} bookmark(s) and {children} child collection(s) to its parent. No bookmarks will be permanently deleted.',
 } as const;
 
 export type MessageKey = keyof typeof en;
@@ -58,6 +76,24 @@ const zh: Record<MessageKey, string> = {
   empty: '还没有书签。',
   created: '保存于',
   loadError: '无法加载书签。',
+  collections: '收藏夹',
+  allBookmarks: '全部书签',
+  newCollectionName: '新收藏夹名称',
+  parentCollection: '父收藏夹',
+  createCollection: '创建收藏夹',
+  tags: '标签',
+  updateTags: '更新标签',
+  clearFilter: '清除筛选',
+  parentFor: '{title} 的父收藏夹',
+  moveUp: '上移 {title}',
+  moveDown: '下移 {title}',
+  renameCollection: '重命名 {title}',
+  deleteCollection: '删除 {title}',
+  collectionFor: '{title} 的收藏夹',
+  tagsFor: '{title} 的标签',
+  removeTagFrom: '从 {title} 移除 {tag}',
+  renameCollectionPrompt: '重命名收藏夹',
+  deleteImpact: '删除“{title}”会把 {bookmarks} 个书签和 {children} 个子收藏夹移到上一级。书签不会被永久删除。',
 };
 
 const messages = { en, zh };
@@ -66,8 +102,10 @@ export function getBrowserLocale(): Locale {
   return browser.i18n.getUILanguage().toLowerCase().startsWith('zh') ? 'zh' : 'en';
 }
 
-export function translate(locale: Locale, key: MessageKey) {
-  return messages[locale][key];
+export function translate(locale: Locale, key: MessageKey, values: Record<string, string | number> = {}) {
+  return (messages[locale][key] as string).replace(/\{(\w+)\}/g, (placeholder, name: string) =>
+    Object.hasOwn(values, name) ? String(values[name]) : placeholder,
+  );
 }
 
 export function useI18n() {
@@ -91,6 +129,6 @@ export function useI18n() {
   return {
     locale,
     setLocale,
-    t: (key: MessageKey) => translate(locale, key),
+    t: (key: MessageKey, values?: Record<string, string | number>) => translate(locale, key, values),
   };
 }
