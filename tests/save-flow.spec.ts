@@ -254,6 +254,7 @@ test('safe collection deletion preserves bookmarks and normalized tags', async (
     await manager.getByLabel('New collection name').fill('Temporary');
     await manager.getByRole('button', { name: 'Create collection' }).click();
     await expect(manager.getByRole('button', { name: 'Temporary', exact: true })).toBeVisible();
+    await manager.getByRole('button', { name: 'Temporary', exact: true }).click();
 
     const fixture = await context.newPage();
     await fixture.goto(fixtureUrl);
@@ -275,7 +276,7 @@ test('safe collection deletion preserves bookmarks and normalized tags', async (
     await expect(manager.getByRole('link', { name: 'Offline fixture' })).toBeVisible();
 
     const cancelledDelete = manager.waitForEvent('dialog');
-    await manager.getByRole('button', { name: 'Delete Temporary' }).click({ noWaitAfter: true });
+    await manager.getByRole('button', { name: 'Delete Temporary', exact: true }).click({ noWaitAfter: true });
     const cancelledDialog = await cancelledDelete;
     expect(cancelledDialog.message()).toContain('1 bookmark');
     await cancelledDialog.dismiss();
@@ -420,6 +421,197 @@ test('Manager searches every agreed field and combines filters', async () => {
     await expect(reopenedManager.getByLabel('Favorite only')).toBeChecked();
     await expect(reopenedManager.getByLabel('Unread only')).toBeChecked();
     await expect.poll(() => reopenedManager.locator('.bookmark-list > li > a').evaluateAll((links) => links.map((link) => (link as HTMLAnchorElement).href))).toEqual(listLinks.slice(0, 2));
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('Trash hides bookmarks and restores every field to a safe collection', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+    await manager.getByLabel('New collection name').fill('Temporary');
+    await manager.getByRole('button', { name: 'Create collection' }).click();
+    await expect(manager.getByRole('button', { name: 'Temporary', exact: true })).toBeVisible();
+
+    const fixture = await context.newPage();
+    await fixture.goto(`${fixtureUrl}?trash=restore`);
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Restorable bookmark');
+    await popup.getByLabel('Description').fill('Preserved description');
+    await popup.getByLabel('Note').fill('Preserved note');
+    await popup.getByLabel('Collection').selectOption({ label: 'Temporary' });
+    await popup.getByLabel('Tags').fill('preserved');
+    await popup.getByLabel('Favorite').check();
+    await popup.getByLabel('Unread').check();
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    const moveToTrash = manager.getByRole('button', { name: 'Move Restorable bookmark to Trash' });
+    await expect(moveToTrash).toBeVisible();
+    await moveToTrash.click();
+    await expect(manager.getByRole('link', { name: 'Restorable bookmark' })).toHaveCount(0);
+
+    await popup.getByLabel('Title').fill('Temporary replacement');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+    await expect(popup.getByRole('status')).toHaveText('Saved');
+    await expect(manager.getByRole('link', { name: 'Temporary replacement' })).toBeVisible();
+
+    await manager.getByRole('button', { name: 'Trash', exact: true }).click();
+    await expect(manager.getByRole('button', { name: 'Temporary', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    await expect(manager.getByRole('link', { name: 'Restorable bookmark' })).toBeVisible();
+    await manager.getByRole('button', { name: 'Restore Restorable bookmark' }).click();
+    await expect(manager.getByRole('status')).toHaveText('This URL is already saved. Move the active bookmark to Trash before restoring.');
+    await expect(manager.getByRole('link', { name: 'Restorable bookmark' })).toBeVisible();
+
+    await manager.getByRole('button', { name: 'All bookmarks' }).click();
+    await manager.getByRole('button', { name: 'Move Temporary replacement to Trash' }).click();
+    await manager.getByRole('button', { name: 'Trash', exact: true }).click();
+    await expect(manager.getByRole('link', { name: 'Temporary replacement' })).toBeVisible();
+
+    const deleteCollection = manager.waitForEvent('dialog');
+    await manager.getByRole('button', { name: 'Delete Temporary', exact: true }).click({ noWaitAfter: true });
+    await (await deleteCollection).accept();
+    await manager.getByRole('button', { name: 'Restore Restorable bookmark' }).click();
+    await expect(manager.getByRole('status')).toHaveText('Original collection is unavailable. Restored to Unsorted.');
+    await manager.getByRole('button', { name: 'All bookmarks' }).click();
+    await expect(manager.getByRole('link', { name: 'Restorable bookmark' })).toBeVisible();
+    await expect(manager.getByRole('link', { name: 'Temporary replacement' })).toHaveCount(0);
+    await expect(manager.getByLabel('Collection for Restorable bookmark').locator('option:checked')).toHaveText('Unsorted');
+
+    await fixture.bringToFront();
+    await popup.reload();
+    await expect(popup.getByLabel('Title')).toHaveValue('Restorable bookmark');
+    await expect(popup.getByLabel('Description')).toHaveValue('Preserved description');
+    await expect(popup.getByLabel('Note')).toHaveValue('Preserved note');
+    await expect(popup.getByLabel('Tags')).toHaveValue('preserved');
+    await expect(popup.getByLabel('Favorite')).toBeChecked();
+    await expect(popup.getByLabel('Unread')).toBeChecked();
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('Trash requires confirmation before permanently deleting bookmarks', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const fixture = await context.newPage();
+    const popup = await context.newPage();
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+
+    await fixture.goto(`${fixtureUrl}?trash=permanent`);
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Delete permanently');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    await fixture.goto(`${fixtureUrl}?trash=empty-one`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Empty one');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    await fixture.goto(`${fixtureUrl}?trash=empty-two`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Empty two');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    for (const title of ['Delete permanently', 'Empty one', 'Empty two']) {
+      await manager.getByRole('button', { name: `Move ${title} to Trash` }).click();
+    }
+    await manager.getByRole('button', { name: 'Trash', exact: true }).click();
+
+    const cancelPermanent = manager.waitForEvent('dialog');
+    const cancelPermanentClick = manager.getByRole('button', { name: 'Permanently delete Delete permanently' }).click({ noWaitAfter: true });
+    await (await cancelPermanent).dismiss();
+    await cancelPermanentClick;
+    await expect(manager.getByRole('link', { name: 'Delete permanently' })).toBeVisible();
+
+    const confirmPermanent = manager.waitForEvent('dialog');
+    const confirmPermanentClick = manager.getByRole('button', { name: 'Permanently delete Delete permanently' }).click({ noWaitAfter: true });
+    await (await confirmPermanent).accept();
+    await confirmPermanentClick;
+    await expect(manager.getByRole('link', { name: 'Delete permanently' })).toHaveCount(0);
+
+    const cancelEmpty = manager.waitForEvent('dialog');
+    const cancelEmptyClick = manager.getByRole('button', { name: 'Empty Trash' }).click({ noWaitAfter: true });
+    await (await cancelEmpty).dismiss();
+    await cancelEmptyClick;
+    await expect(manager.getByRole('link', { name: 'Empty one' })).toBeVisible();
+    await expect(manager.getByRole('link', { name: 'Empty two' })).toBeVisible();
+
+    const confirmEmpty = manager.waitForEvent('dialog');
+    const confirmEmptyClick = manager.getByRole('button', { name: 'Empty Trash' }).click({ noWaitAfter: true });
+    await (await confirmEmpty).accept();
+    await confirmEmptyClick;
+    await expect(manager.getByText('Trash is empty.')).toBeVisible();
+  } finally {
+    await context?.close();
+    await rm(profile, { recursive: true, force: true });
+  }
+});
+
+test('automatic cleanup retains recent Trash items and purges items older than 30 days', async () => {
+  const profile = await mkdtemp(path.join(tmpdir(), 'openbookmark-'));
+  let context: BrowserContext | undefined;
+
+  try {
+    context = await launch(profile);
+    const extensionId = new URL((await getExtensionWorker(context)).url()).host;
+    const fixture = await context.newPage();
+    const popup = await context.newPage();
+    const manager = await context.newPage();
+    await manager.goto(`chrome-extension://${extensionId}/manager.html`);
+
+    await fixture.goto(`${fixtureUrl}?trash=recent`);
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Recent trash');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    await fixture.goto(`${fixtureUrl}?trash=expired`);
+    await fixture.bringToFront();
+    await popup.reload();
+    await popup.getByLabel('Title').fill('Expired trash');
+    await popup.getByRole('button', { name: 'Save bookmark' }).click();
+
+    const day = 24 * 60 * 60 * 1000;
+    await manager.clock.install({ time: new Date(Date.now() - 29 * day) });
+    await manager.getByRole('button', { name: 'Move Recent trash to Trash' }).click();
+    await manager.clock.setFixedTime(new Date(Date.now() - 31 * day));
+    await manager.getByRole('button', { name: 'Move Expired trash to Trash' }).click();
+
+    await context.close();
+    context = await launch(profile);
+    const worker = await getExtensionWorker(context);
+    const alarm = await worker.evaluate(async () => {
+      const extensionApi = (globalThis as unknown as { chrome: { alarms: { get(name: string): Promise<{ name: string } | undefined> } } }).chrome;
+      return extensionApi.alarms.get('trash-cleanup');
+    });
+    expect(alarm?.name).toBe('trash-cleanup');
+
+    const reopenedManager = await context.newPage();
+    await reopenedManager.goto(`chrome-extension://${extensionId}/manager.html`);
+    await reopenedManager.getByRole('button', { name: 'Trash', exact: true }).click();
+    await expect(reopenedManager.getByRole('link', { name: 'Recent trash' })).toBeVisible();
+    await expect(reopenedManager.getByRole('link', { name: 'Expired trash' })).toHaveCount(0);
   } finally {
     await context?.close();
     await rm(profile, { recursive: true, force: true });

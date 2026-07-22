@@ -13,6 +13,8 @@ export interface Bookmark {
   unread: boolean;
   collectionId: string | null;
   tags: string[];
+  trashedAt: string | null;
+  originalCollectionId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -37,6 +39,13 @@ export interface Collection {
   position: number;
   createdAt: string;
   updatedAt: string;
+}
+
+interface DeletionMarker {
+  id: string;
+  normalizedUrl: string;
+  deletedAt: string;
+  reason: 'manual' | 'expired';
 }
 
 function normalizeTags(tags: string[]) {
@@ -96,6 +105,7 @@ function nextSiblingPosition(collections: Collection[], parentId: string | null)
 class OpenBookmarkDatabase extends Dexie {
   bookmarks!: Table<Bookmark, string>;
   collections!: Table<Collection, string>;
+  tombstones!: Table<DeletionMarker, string>;
 
   constructor() {
     super('openbookmark');
@@ -121,20 +131,41 @@ class OpenBookmarkDatabase extends Dexie {
         await collectionTable.update(collection.id, { parentId: null, position });
       }
     });
+    this.version(4).stores({ bookmarks: 'id,normalizedUrl,createdAt,collectionId,*tags,trashedAt', collections: 'id,parentId,title', tombstones: 'id,deletedAt' }).upgrade((transaction) =>
+      transaction.table<Bookmark>('bookmarks').toCollection().modify((bookmark) => {
+        bookmark.trashedAt ??= null;
+        bookmark.originalCollectionId ??= null;
+      }),
+    );
   }
 }
 
 const db = new OpenBookmarkDatabase();
+const trashRetentionMs = 30 * 24 * 60 * 60 * 1000;
+
+export const trashCleanupErrorKey = 'trashCleanupError';
 
 export const bookmarkRepository = {
   async save(input: BookmarkInput) {
     return db.transaction('rw', db.bookmarks, async () => {
       const normalizedUrl = normalizeBookmarkUrl(input.url);
-      const duplicate = await db.bookmarks.where('normalizedUrl').equals(normalizedUrl).first();
-      const existing = duplicate ?? (input.id ? await db.bookmarks.get(input.id) : undefined);
+      const duplicate = await db.bookmarks.where('normalizedUrl').equals(normalizedUrl).filter((bookmark) => !bookmark.trashedAt).first();
+      const inputBookmark = input.id ? await db.bookmarks.get(input.id) : undefined;
+      const existing = duplicate ?? (inputBookmark && !inputBookmark.trashedAt ? inputBookmark : undefined);
       const now = new Date().toISOString();
-      const { id: _, ...fields } = input;
-      const values = { ...fields, tags: normalizeTags(input.tags), normalizedUrl, updatedAt: now };
+      const values = {
+        url: input.url,
+        title: input.title,
+        description: input.description,
+        coverUrl: input.coverUrl,
+        note: input.note,
+        favorite: input.favorite,
+        unread: input.unread,
+        collectionId: input.collectionId,
+        tags: normalizeTags(input.tags),
+        normalizedUrl,
+        updatedAt: now,
+      };
 
       if (existing) {
         await db.bookmarks.update(existing.id, values);
@@ -142,17 +173,22 @@ export const bookmarkRepository = {
       }
 
       const id = crypto.randomUUID();
-      await db.bookmarks.add({ ...values, id, createdAt: now });
+      await db.bookmarks.add({ ...values, id, trashedAt: null, originalCollectionId: null, createdAt: now });
       return { id, created: true };
     });
   },
 
   findByUrl(url: string) {
-    return db.bookmarks.where('normalizedUrl').equals(normalizeBookmarkUrl(url)).first();
+    return db.bookmarks.where('normalizedUrl').equals(normalizeBookmarkUrl(url)).filter((bookmark) => !bookmark.trashedAt).first();
   },
 
   list() {
-    return db.bookmarks.orderBy('createdAt').reverse().toArray();
+    return db.bookmarks.orderBy('createdAt').reverse().filter((bookmark) => !bookmark.trashedAt).toArray();
+  },
+
+  async listTrash() {
+    return (await db.bookmarks.filter((bookmark) => Boolean(bookmark.trashedAt)).toArray())
+      .sort((a, b) => b.trashedAt!.localeCompare(a.trashedAt!));
   },
 
   watch() {
@@ -161,6 +197,82 @@ export const bookmarkRepository = {
 
   watchByUrl(url: string) {
     return liveQuery(() => this.findByUrl(url));
+  },
+
+  watchTrash() {
+    return liveQuery(() => this.listTrash());
+  },
+
+  async moveToTrash(id: string, now = new Date()) {
+    const bookmark = await db.bookmarks.get(id);
+    if (!bookmark || bookmark.trashedAt) return;
+    await db.bookmarks.update(id, {
+      trashedAt: now.toISOString(),
+      originalCollectionId: bookmark.collectionId,
+      updatedAt: now.toISOString(),
+    });
+  },
+
+  async restore(id: string) {
+    return db.transaction('rw', db.bookmarks, db.collections, async () => {
+      const bookmark = await db.bookmarks.get(id);
+      if (!bookmark?.trashedAt) return { restoredToUnsorted: false, duplicate: false };
+      const originalCollectionExists = bookmark.originalCollectionId
+        ? Boolean(await db.collections.get(bookmark.originalCollectionId))
+        : true;
+      const activeDuplicate = await db.bookmarks
+        .where('normalizedUrl')
+        .equals(bookmark.normalizedUrl)
+        .filter((candidate) => candidate.id !== id && !candidate.trashedAt)
+        .first();
+      if (activeDuplicate) return { restoredToUnsorted: false, duplicate: true };
+      await db.bookmarks.update(id, {
+        collectionId: originalCollectionExists ? bookmark.originalCollectionId : null,
+        originalCollectionId: null,
+        trashedAt: null,
+        updatedAt: new Date().toISOString(),
+      });
+      return { restoredToUnsorted: !originalCollectionExists, duplicate: false };
+    });
+  },
+
+  async permanentlyDelete(id: string, now = new Date()) {
+    await db.transaction('rw', db.bookmarks, db.tombstones, async () => {
+      const bookmark = await db.bookmarks.get(id);
+      if (!bookmark?.trashedAt) return;
+      await db.tombstones.put({ id, normalizedUrl: bookmark.normalizedUrl, deletedAt: now.toISOString(), reason: 'manual' });
+      await db.bookmarks.delete(id);
+    });
+  },
+
+  async emptyTrash(now = new Date()) {
+    await db.transaction('rw', db.bookmarks, db.tombstones, async () => {
+      const trashed = await db.bookmarks.filter((bookmark) => Boolean(bookmark.trashedAt)).toArray();
+      await db.tombstones.bulkPut(trashed.map((bookmark) => ({
+        id: bookmark.id,
+        normalizedUrl: bookmark.normalizedUrl,
+        deletedAt: now.toISOString(),
+        reason: 'manual',
+      })));
+      await db.bookmarks.bulkDelete(trashed.map((bookmark) => bookmark.id));
+    });
+  },
+
+  async cleanupExpiredTrash(now = new Date()) {
+    return db.transaction('rw', db.bookmarks, db.tombstones, async () => {
+      const cutoff = new Date(now.getTime() - trashRetentionMs).toISOString();
+      const expired = await db.bookmarks
+        .filter((bookmark) => Boolean(bookmark.trashedAt && bookmark.trashedAt < cutoff))
+        .toArray();
+      await db.tombstones.bulkPut(expired.map((bookmark) => ({
+        id: bookmark.id,
+        normalizedUrl: bookmark.normalizedUrl,
+        deletedAt: now.toISOString(),
+        reason: 'expired',
+      })));
+      await db.bookmarks.bulkDelete(expired.map((bookmark) => bookmark.id));
+      return expired.length;
+    });
   },
 
   setCollection(id: string, collectionId: string | null) {

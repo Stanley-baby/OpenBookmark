@@ -151,6 +151,10 @@ h1 {
   text-align: center;
 }
 
+.manager-status {
+  min-height: 21px;
+}
+
 .bookmark-list.card-view {
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   align-items: start;

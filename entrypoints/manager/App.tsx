@@ -5,6 +5,7 @@ import {
   collectionDescendantIds,
   collectionPath,
   collectionRepository,
+  trashCleanupErrorKey,
   type Bookmark,
   type Collection,
 } from '../../lib/bookmarks';
@@ -27,6 +28,7 @@ const preferencesKey = 'managerPreferences';
 export default function App() {
   const { locale, setLocale, t } = useI18n();
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [trashedBookmarks, setTrashedBookmarks] = useState<Bookmark[]>([]);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [search, setSearch] = useState('');
   const [collectionFilter, setCollectionFilter] = useState<string | null>(null);
@@ -37,6 +39,9 @@ export default function App() {
   const [view, setView] = useState<ViewMode>('list');
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [showTrash, setShowTrash] = useState(false);
+  const [trashStatus, setTrashStatus] = useState('');
+  const [trashCleanupFailed, setTrashCleanupFailed] = useState(false);
   const collectionLabels = useMemo(
     () => new Map(collections.map((collection) => [collection.id, collectionPath(collection, collections)])),
     [collections],
@@ -48,11 +53,24 @@ export default function App() {
 
   useEffect(() => {
     const bookmarkSubscription = bookmarkRepository.watch().subscribe({ next: setBookmarks, error: () => setFailed(true) });
+    const trashSubscription = bookmarkRepository.watchTrash().subscribe({ next: setTrashedBookmarks, error: () => setFailed(true) });
     const collectionSubscription = collectionRepository.watch().subscribe({ next: setCollections, error: () => setFailed(true) });
     return () => {
       bookmarkSubscription.unsubscribe();
+      trashSubscription.unsubscribe();
       collectionSubscription.unsubscribe();
     };
+  }, []);
+
+  useEffect(() => {
+    void browser.storage.local.get(trashCleanupErrorKey).then((result) => setTrashCleanupFailed(Boolean(result[trashCleanupErrorKey])));
+    const handleStorageChange = (changes: Record<string, { newValue?: unknown }>, areaName: string) => {
+      if (areaName === 'local' && trashCleanupErrorKey in changes) {
+        setTrashCleanupFailed(Boolean(changes[trashCleanupErrorKey].newValue));
+      }
+    };
+    browser.storage.onChanged.addListener(handleStorageChange);
+    return () => browser.storage.onChanged.removeListener(handleStorageChange);
   }, []);
 
   useEffect(() => {
@@ -132,13 +150,40 @@ export default function App() {
     setUnreadOnly(false);
   }
 
+  async function moveToTrash(bookmark: Bookmark) {
+    await bookmarkRepository.moveToTrash(bookmark.id);
+    setTrashStatus(t('movedToTrash', { title: bookmark.title }));
+  }
+
+  async function restoreBookmark(bookmark: Bookmark) {
+    const result = await bookmarkRepository.restore(bookmark.id);
+    setTrashStatus(result.duplicate
+      ? t('restoreDuplicate')
+      : result.restoredToUnsorted
+        ? t('restoredToUnsorted')
+        : t('restoredBookmark', { title: bookmark.title }));
+  }
+
+  async function permanentlyDelete(bookmark: Bookmark) {
+    if (!confirm(t('confirmPermanentDelete', { title: bookmark.title }))) return;
+    await bookmarkRepository.permanentlyDelete(bookmark.id);
+    setTrashStatus(t('permanentlyDeleted', { title: bookmark.title }));
+  }
+
+  async function emptyTrash() {
+    if (!confirm(t('confirmEmptyTrash', { count: trashedBookmarks.length }))) return;
+    await bookmarkRepository.emptyTrash();
+    setTrashStatus(t('emptiedTrash'));
+  }
+
   return (
     <div className="layout">
       <aside>
         <strong>OpenBookmark</strong>
         <section className="collections" aria-labelledby="collections-heading">
           <h2 id="collections-heading">{t('collections')}</h2>
-          <button type="button" aria-pressed={collectionFilter === null} onClick={() => setCollectionFilter(null)}>{t('allBookmarks')}</button>
+          <button type="button" aria-pressed={!showTrash && collectionFilter === null} onClick={() => { setShowTrash(false); setCollectionFilter(null); }}>{t('allBookmarks')}</button>
+          <button type="button" aria-pressed={showTrash} onClick={() => setShowTrash(true)}>{t('trash')}</button>
           <form onSubmit={(event) => { event.preventDefault(); void createCollection(event.currentTarget); }}>
             <label>
               {t('newCollectionName')}
@@ -161,9 +206,9 @@ export default function App() {
                   <button
                     type="button"
                     data-collection-id={collection.id}
-                    className={collectionFilter === collection.id ? 'selected' : ''}
-                    aria-pressed={collectionFilter === collection.id}
-                    onClick={() => setCollectionFilter(collection.id)}
+                    className={!showTrash && collectionFilter === collection.id ? 'selected' : ''}
+                    aria-pressed={!showTrash && collectionFilter === collection.id}
+                    onClick={() => { setShowTrash(false); setCollectionFilter(collection.id); }}
                   >
                     {collection.title}
                   </button>
@@ -196,13 +241,13 @@ export default function App() {
           <section aria-labelledby="tags-heading">
             <h2 id="tags-heading">{t('tags')}</h2>
             {tagFilter && <button type="button" onClick={() => setTagFilter(null)}>{t('clearFilter')}</button>}
-            <div className="tag-list">{tags.map((tag) => <button key={tag} type="button" aria-pressed={tagFilter === tag} onClick={() => setTagFilter(tag)}>{tag}</button>)}</div>
+            <div className="tag-list">{tags.map((tag) => <button key={tag} type="button" aria-pressed={!showTrash && tagFilter === tag} onClick={() => { setShowTrash(false); setTagFilter(tag); }}>{tag}</button>)}</div>
           </section>
         )}
       </aside>
       <main>
         <header>
-          <h1>{t('manager')}</h1>
+          <h1>{showTrash ? t('trash') : t('manager')}</h1>
           <label className="language">
             {t('language')}
             <select value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
@@ -212,7 +257,7 @@ export default function App() {
           </label>
         </header>
 
-        <section className="manager-controls" aria-label={t('filters')}>
+        {!showTrash && <section className="manager-controls" aria-label={t('filters')}>
           <label>
             {t('searchBookmarks')}
             <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
@@ -234,9 +279,28 @@ export default function App() {
             <label><input type="checkbox" checked={favoriteOnly} onChange={(event) => setFavoriteOnly(event.target.checked)} /> {t('favoriteOnly')}</label>
             <label><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} /> {t('unreadOnly')}</label>
           </fieldset>
-        </section>
+        </section>}
+        <p className="manager-status" role="status">{trashStatus}</p>
+        {trashCleanupFailed && <p role="alert">{t('trashCleanupError')}</p>}
 
-        {failed ? <p role="alert">{t('loadError')}</p> : bookmarks.length === 0 ? <p>{t('empty')}</p> : visibleBookmarks.length === 0 ? (
+        {failed ? <p role="alert">{t('loadError')}</p> : showTrash ? (
+          trashedBookmarks.length === 0 ? <p>{t('emptyTrash')}</p> : (
+            <>
+              <button type="button" onClick={() => void emptyTrash()}>{t('emptyTrashAction')}</button>
+              <ul className="bookmark-list list-view" aria-label={t('trash')}>
+                {trashedBookmarks.map((bookmark) => (
+                  <li key={bookmark.id}>
+                    <a href={bookmark.url} target="_blank" rel="noreferrer">{bookmark.title}</a>
+                    <span className="url">{bookmark.url}</span>
+                    <time dateTime={bookmark.trashedAt!}>{t('deleted')} {dateFormat.format(new Date(bookmark.trashedAt!))}</time>
+                    <button type="button" aria-label={t('restoreBookmark', { title: bookmark.title })} onClick={() => void restoreBookmark(bookmark)}>{t('restore')}</button>
+                    <button type="button" aria-label={t('permanentlyDeleteBookmark', { title: bookmark.title })} onClick={() => void permanentlyDelete(bookmark)}>{t('permanentlyDelete')}</button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )
+        ) : bookmarks.length === 0 ? <p>{t('empty')}</p> : visibleBookmarks.length === 0 ? (
           <div className="empty-state">
             <p>{t('noMatches')}</p>
             <button type="button" onClick={clearFilters}>{t('clearAllFilters')}</button>
@@ -276,6 +340,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                <button type="button" aria-label={t('moveBookmarkToTrash', { title: bookmark.title })} onClick={() => void moveToTrash(bookmark)}>{t('moveToTrash')}</button>
                 <time dateTime={bookmark.createdAt}>{t('created')} {dateFormat.format(new Date(bookmark.createdAt))}</time>
               </li>
             ))}
