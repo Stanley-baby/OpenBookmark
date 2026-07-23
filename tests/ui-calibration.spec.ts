@@ -34,6 +34,7 @@ test('fixed viewport screenshots cover popup and Manager empty states without co
     await manager.setViewportSize({ width: 1280, height: 800 });
     await manager.goto(`chrome-extension://${extensionId}/manager.html`);
     await expect(manager.locator('body')).not.toContainText(/raindrop/i);
+    await manager.getByRole('button', { name: 'Open settings' }).click();
     await expect(manager.getByRole('heading', { name: 'Backup and restore' })).toBeVisible();
     expect((await manager.screenshot()).byteLength).toBeGreaterThan(1_000);
   } finally {
