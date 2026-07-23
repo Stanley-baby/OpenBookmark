@@ -1,6 +1,17 @@
 :root {
-  color: #4d4d4d;
-  background: #fff;
+  --ob-surface: #fff;
+  --ob-surface-subtle: #f7f8fa;
+  --ob-sidebar: #f3f5f7;
+  --ob-ink: #26313d;
+  --ob-muted: #6f7b88;
+  --ob-border: #e2e7ec;
+  --ob-border-strong: #cfd8e1;
+  --ob-accent: #2f89cd;
+  --ob-accent-subtle: #e8f3fb;
+  --ob-danger: #bc4b54;
+  --ob-radius: 8px;
+  color: var(--ob-ink);
+  background: var(--ob-surface);
   font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
@@ -30,9 +41,9 @@ select {
 button,
 select {
   min-height: 32px;
-  border: 1px solid #cfcfcf;
-  border-radius: 4px;
-  background: #fff;
+  border: 1px solid var(--ob-border-strong);
+  border-radius: var(--ob-radius);
+  background: var(--ob-surface);
 }
 
 button {
@@ -45,8 +56,19 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 3px solid hsl(207 80% 49% / 45%);
+  outline: 3px solid rgb(47 137 205 / 35%);
   outline-offset: 2px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .language {

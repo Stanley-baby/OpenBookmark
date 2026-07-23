@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, useEffect, useMemo, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
   bookmarkRepository,
@@ -71,6 +71,10 @@ export default function App() {
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [failed, setFailed] = useState(false);
   const [showTrash, setShowTrash] = useState(false);
+  const [showUnsorted, setShowUnsorted] = useState(false);
+  const [collapsedCollectionIds, setCollapsedCollectionIds] = useState<Set<string>>(new Set());
+  const [selectedBookmarkId, setSelectedBookmarkId] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [managerStatus, setManagerStatus] = useState('');
   const [trashCleanupFailed, setTrashCleanupFailed] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -92,6 +96,22 @@ export default function App() {
     () => new Map(collections.map((collection) => [collection.id, collectionDescendantIds(collection.id, collections)])),
     [collections],
   );
+  const collectionDepths = useMemo(() => {
+    const byId = new Map(collections.map((collection) => [collection.id, collection]));
+    return new Map(collections.map((collection) => {
+      let depth = 0;
+      let parent = collection.parentId ? byId.get(collection.parentId) : undefined;
+      while (parent) {
+        depth += 1;
+        parent = parent.parentId ? byId.get(parent.parentId) : undefined;
+      }
+      return [collection.id, depth];
+    }));
+  }, [collections]);
+  const collectionBookmarkCounts = useMemo(() => new Map(collections.map((collection) => {
+    const ids = descendantsByCollection.get(collection.id)!;
+    return [collection.id, bookmarks.filter((bookmark) => bookmark.collectionId === collection.id || ids.has(bookmark.collectionId ?? '')).length];
+  })), [bookmarks, collections, descendantsByCollection]);
 
   useEffect(() => {
     const bookmarkSubscription = bookmarkRepository.watch().subscribe({ next: setBookmarks, error: () => setFailed(true) });
@@ -151,6 +171,7 @@ export default function App() {
         .toLocaleLowerCase();
       return (!query || searchableText.includes(query))
         && (!collectionFilter || bookmark.collectionId === collectionFilter)
+        && (!showUnsorted || bookmark.collectionId === null)
         && (!tagFilter || bookmark.tags.includes(tagFilter))
         && (!favoriteOnly || bookmark.favorite)
         && (!unreadOnly || bookmark.unread);
@@ -165,14 +186,23 @@ export default function App() {
       }
       return b.createdAt.localeCompare(a.createdAt) || byId;
     });
-  }, [bookmarks, collectionFilter, favoriteOnly, locale, search, sort, tagFilter, unreadOnly]);
+  }, [bookmarks, collectionFilter, favoriteOnly, locale, search, showUnsorted, sort, tagFilter, unreadOnly]);
   const tags = useMemo(() => [...new Set(bookmarks.flatMap((bookmark) => bookmark.tags))].sort(), [bookmarks]);
   const dateFormat = new Intl.DateTimeFormat(locale === 'zh' ? 'zh-CN' : 'en', { dateStyle: 'medium', timeStyle: 'short' });
   const selectedVisibleIds = useMemo(() => visibleBookmarks.filter((bookmark) => selectedIds.has(bookmark.id)).map((bookmark) => bookmark.id), [selectedIds, visibleBookmarks]);
+  const selectedBookmark = useMemo(
+    () => visibleBookmarks.find((bookmark) => bookmark.id === selectedBookmarkId) ?? null,
+    [selectedBookmarkId, visibleBookmarks],
+  );
 
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [collectionFilter, favoriteOnly, search, showTrash, tagFilter, unreadOnly]);
+  }, [collectionFilter, favoriteOnly, search, showTrash, showUnsorted, tagFilter, unreadOnly]);
+
+  useEffect(() => {
+    if (visibleBookmarks.some((bookmark) => bookmark.id === selectedBookmarkId)) return;
+    setSelectedBookmarkId(visibleBookmarks[0]?.id ?? null);
+  }, [selectedBookmarkId, visibleBookmarks]);
 
   async function createCollection(form: HTMLFormElement) {
     const data = new FormData(form);
@@ -198,6 +228,7 @@ export default function App() {
   function clearFilters() {
     setSearch('');
     setCollectionFilter(null);
+    setShowUnsorted(false);
     setTagFilter(null);
     setFavoriteOnly(false);
     setUnreadOnly(false);
@@ -274,7 +305,26 @@ export default function App() {
 
   async function moveToTrash(bookmark: Bookmark) {
     await bookmarkRepository.moveToTrash(bookmark.id);
+    if (selectedBookmarkId === bookmark.id) setSelectedBookmarkId(null);
     setManagerStatus(t('movedToTrash', { title: bookmark.title }));
+  }
+
+  async function saveInspector(form: HTMLFormElement) {
+    if (!selectedBookmark) return;
+    const data = new FormData(form);
+    await bookmarkRepository.save({
+      id: selectedBookmark.id,
+      url: String(data.get('url') ?? '').trim(),
+      title: String(data.get('title') ?? '').trim() || selectedBookmark.title,
+      description: String(data.get('description') ?? ''),
+      coverUrl: String(data.get('coverUrl') ?? ''),
+      note: String(data.get('note') ?? ''),
+      favorite: data.get('favorite') === 'on',
+      unread: data.get('unread') === 'on',
+      collectionId: String(data.get('collectionId') ?? '') || null,
+      tags: String(data.get('tags') ?? '').split(','),
+    });
+    setManagerStatus(locale === 'zh' ? '书签已保存。' : 'Bookmark saved.');
   }
 
   async function restoreBookmark(bookmark: Bookmark) {
@@ -578,13 +628,19 @@ export default function App() {
 
   return (
     <div className="layout">
-      <aside>
-        <strong>OpenBookmark</strong>
+      <aside className="manager-sidebar">
+        <div className="sidebar-account">
+          <strong>OpenBookmark</strong>
+          <button type="button" aria-label="Focus collection creation" onClick={() => document.querySelector<HTMLInputElement>('.collection-create input')?.focus()}>+</button>
+        </div>
+        <nav className="system-locations" aria-label={t('collections')}>
+          <button type="button" aria-pressed={!showTrash && !showUnsorted && collectionFilter === null} onClick={() => { setShowTrash(false); setShowUnsorted(false); setCollectionFilter(null); }}><span aria-hidden="true">☁</span>{t('allBookmarks')}<em aria-hidden="true">{bookmarks.length}</em></button>
+          <button type="button" aria-pressed={!showTrash && showUnsorted} onClick={() => { setShowTrash(false); setShowUnsorted(true); setCollectionFilter(null); }}><span aria-hidden="true">▣</span>{t('unsorted')}<em aria-hidden="true">{bookmarks.filter((bookmark) => bookmark.collectionId === null).length}</em></button>
+          <button type="button" aria-pressed={showTrash} onClick={() => { setShowTrash(true); setShowUnsorted(false); }}><span aria-hidden="true">♲</span>{t('trash')}<em aria-hidden="true">{trashedBookmarks.length}</em></button>
+        </nav>
         <section className="collections" aria-labelledby="collections-heading">
           <h2 id="collections-heading">{t('collections')}</h2>
-          <button type="button" aria-pressed={!showTrash && collectionFilter === null} onClick={() => { setShowTrash(false); setCollectionFilter(null); }}>{t('allBookmarks')}</button>
-          <button type="button" aria-pressed={showTrash} onClick={() => setShowTrash(true)}>{t('trash')}</button>
-          <form onSubmit={(event) => { event.preventDefault(); void createCollection(event.currentTarget); }}>
+          <form className="collection-create" onSubmit={(event) => { event.preventDefault(); void createCollection(event.currentTarget); }}>
             <label>
               {t('newCollectionName')}
               <input name="title" required />
@@ -601,17 +657,37 @@ export default function App() {
           <ul className="collection-list">
             {collections.map((collection) => {
               const descendants = descendantsByCollection.get(collection.id)!;
+              const hiddenByParent = collections.some((ancestor) => {
+                if (!collapsedCollectionIds.has(ancestor.id)) return false;
+                return descendantsByCollection.get(ancestor.id)?.has(collection.id);
+              });
+              const hasChildren = descendants.size > 0;
+              if (hiddenByParent) return null;
               return (
-                <li key={collection.id} className="collection-item">
+                <li key={collection.id} className="collection-item" style={{ '--tree-indent': `${(collectionDepths.get(collection.id) ?? 0) * 16}px` } as CSSProperties}>
+                  {hasChildren ? (
+                    <button
+                      type="button"
+                      className="tree-toggle"
+                      aria-label={collapsedCollectionIds.has(collection.id) ? `Expand ${collection.title}` : `Collapse ${collection.title}`}
+                      onClick={() => setCollapsedCollectionIds((current) => {
+                        const next = new Set(current);
+                        if (next.has(collection.id)) next.delete(collection.id);
+                        else next.add(collection.id);
+                        return next;
+                      })}
+                    >{collapsedCollectionIds.has(collection.id) ? '›' : '⌄'}</button>
+                  ) : <span className="tree-spacer" aria-hidden="true" />}
                   <button
                     type="button"
                     data-collection-id={collection.id}
                     className={!showTrash && collectionFilter === collection.id ? 'selected' : ''}
                     aria-pressed={!showTrash && collectionFilter === collection.id}
-                    onClick={() => { setShowTrash(false); setCollectionFilter(collection.id); }}
+                    onClick={() => { setShowTrash(false); setShowUnsorted(false); setCollectionFilter(collection.id); }}
                   >
                     {collection.title}
                   </button>
+                  <em>{collectionBookmarkCounts.get(collection.id) ?? 0}</em>
                   <label>
                     <select
                       aria-label={t('parentFor', { title: collection.title })}
@@ -641,27 +717,31 @@ export default function App() {
           <section aria-labelledby="tags-heading">
             <h2 id="tags-heading">{t('tags')}</h2>
             {tagFilter && <button type="button" onClick={() => setTagFilter(null)}>{t('clearFilter')}</button>}
-            <div className="tag-list">{tags.map((tag) => <button key={tag} type="button" aria-pressed={!showTrash && tagFilter === tag} onClick={() => { setShowTrash(false); setTagFilter(tag); }}>{tag}</button>)}</div>
+            <div className="tag-list">{tags.map((tag) => <button key={tag} type="button" aria-pressed={!showTrash && tagFilter === tag} onClick={() => { setShowTrash(false); setShowUnsorted(false); setTagFilter(tag); }}>{tag}</button>)}</div>
           </section>
         )}
       </aside>
-      <main>
-        <header>
-          <h1>{showTrash ? t('trash') : t('manager')}</h1>
-          <label className="language">
-            {t('language')}
-            <select value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
-              <option value="en">{t('english')}</option>
-              <option value="zh">{t('chinese')}</option>
-            </select>
-          </label>
+      <main className="manager-main">
+        <header className="manager-topbar">
+          <div className="manager-topbar-actions">
+            {!showTrash && <button type="button" className="toolbar-add" aria-label="Focus collection creation" onClick={() => document.querySelector<HTMLInputElement>('.collection-create input')?.focus()}>+</button>}
+            <button type="button" className="toolbar-icon" aria-label="Open settings" aria-pressed={settingsOpen} onClick={() => setSettingsOpen((current) => !current)}>⚙</button>
+            <label className="language">
+              {t('language')}
+              <select value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
+                <option value="en">{t('english')}</option>
+                <option value="zh">{t('chinese')}</option>
+              </select>
+            </label>
+          </div>
+          {!showTrash && <label className="manager-search">
+            <span className="sr-only">{t('searchBookmarks')}</span>
+            <input type="search" value={search} placeholder={t('searchBookmarks')} onChange={(event) => setSearch(event.target.value)} />
+          </label>}
         </header>
 
         {!showTrash && <section className="manager-controls" aria-label={t('filters')}>
-          <label>
-            {t('searchBookmarks')}
-            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} />
-          </label>
+          <div className="scope-title"><span aria-hidden="true">☁</span><h1>{showUnsorted ? t('unsorted') : t('manager')}</h1></div>
           <label>
             {t('sortBookmarks')}
             <select value={sort} onChange={(event) => setSort(event.target.value as SortMode)}>
@@ -680,7 +760,15 @@ export default function App() {
             <label><input type="checkbox" checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} /> {t('unreadOnly')}</label>
           </fieldset>
         </section>}
-        {!showTrash && (
+        {!showTrash && settingsOpen && (
+          <aside className="settings-drawer" aria-label="Settings">
+            <header className="settings-drawer-header">
+              <div>
+                <span>{locale === 'zh' ? '本地管理' : 'Local management'}</span>
+                <h2>{locale === 'zh' ? '设置与备份' : 'Settings and backup'}</h2>
+              </div>
+              <button type="button" aria-label="Close settings" onClick={() => setSettingsOpen(false)}>×</button>
+            </header>
           <section className="import-export" aria-label={t('browserImportExport')}>
             <label>
               {t('importBrowserHtml')}
@@ -698,8 +786,6 @@ export default function App() {
               <input type="file" accept=".json,application/json" onChange={(event) => void importRaindropJson(event.currentTarget.files?.[0])} />
             </label>
           </section>
-        )}
-        {!showTrash && (
           <section className="backup-panel" aria-labelledby="backup-heading">
             <h2 id="backup-heading">{t('backupAndRestore')}</h2>
             <div className="settings-grid">
@@ -753,6 +839,7 @@ export default function App() {
               </div>
             )}
           </section>
+          </aside>
         )}
         {!showTrash && visibleBookmarks.length > 0 && (
           <section className="bulk-actions" aria-label={t('bulkActions')}>
@@ -789,7 +876,7 @@ export default function App() {
           trashedBookmarks.length === 0 ? <p>{t('emptyTrash')}</p> : (
             <>
               <button type="button" onClick={() => void emptyTrash()}>{t('emptyTrashAction')}</button>
-              <ul className="bookmark-list list-view" aria-label={t('trash')}>
+              <ul className="bookmark-list list-view trash-list" aria-label={t('trash')}>
                 {trashedBookmarks.map((bookmark) => (
                   <li key={bookmark.id}>
                     <a href={bookmark.url} target="_blank" rel="noreferrer">{bookmark.title}</a>
@@ -810,13 +897,14 @@ export default function App() {
         ) : (
           <ul className={`bookmark-list ${view}-view`} aria-label={t('manager')}>
             {visibleBookmarks.map((bookmark) => (
-              <li key={bookmark.id}>
+              <li key={bookmark.id} className={selectedBookmarkId === bookmark.id ? 'selected-bookmark' : ''} onClick={() => setSelectedBookmarkId(bookmark.id)}>
                 <label className="bookmark-select">
                   <input type="checkbox" checked={selectedIds.has(bookmark.id)} onChange={(event) => toggleSelected(bookmark.id, event.target.checked)} />
                   {t('selectBookmark', { title: bookmark.title })}
                 </label>
-                {view === 'card' && <ThumbnailCover coverUrl={bookmark.coverUrl} title={bookmark.title} />}
+                <ThumbnailCover coverUrl={bookmark.coverUrl} title={bookmark.title} />
                 <a href={bookmark.url} target="_blank" rel="noreferrer">{bookmark.title}</a>
+                {bookmark.description && <span className="bookmark-description">{bookmark.description}</span>}
                 <span className="url">{bookmark.url}</span>
                 {bookmark.metadataError && <span role="note">{t('metadataRefreshFailed', { reason: bookmark.metadataError })}</span>}
                 <label>
@@ -853,6 +941,57 @@ export default function App() {
               </li>
             ))}
           </ul>
+        )}
+        {!showTrash && selectedBookmark && (
+          <aside className="bookmark-inspector" aria-label={locale === 'zh' ? '书签详情' : 'Bookmark details'}>
+            <header>
+              <strong>{locale === 'zh' ? '书签详情' : 'Bookmark details'}</strong>
+              <button type="button" aria-label="Close bookmark details" onClick={() => setSelectedBookmarkId(null)}>×</button>
+            </header>
+            <form key={selectedBookmark.id} onSubmit={(event) => { event.preventDefault(); void saveInspector(event.currentTarget); }}>
+              <ThumbnailCover coverUrl={selectedBookmark.coverUrl} title={selectedBookmark.title} />
+              <label>
+                {t('title')}
+                <input name="title" defaultValue={selectedBookmark.title} required />
+              </label>
+              <label>
+                {t('description')}
+                <textarea name="description" defaultValue={selectedBookmark.description} rows={3} />
+              </label>
+              <label>
+                {t('note')}
+                <textarea name="note" defaultValue={selectedBookmark.note} rows={4} />
+              </label>
+              <label>
+                {t('collection')}
+                <select name="collectionId" defaultValue={selectedBookmark.collectionId ?? ''}>
+                  <option value="">{t('unsorted')}</option>
+                  {collections.map((collection) => <option key={collection.id} value={collection.id}>{collectionLabels.get(collection.id)}</option>)}
+                </select>
+              </label>
+              <label>
+                {t('tags')}
+                <input name="tags" defaultValue={selectedBookmark.tags.join(', ')} />
+              </label>
+              <label>
+                {t('url')}
+                <input name="url" type="url" defaultValue={selectedBookmark.url} required />
+              </label>
+              <label className="inspector-cover-field">
+                {t('cover')}
+                <input name="coverUrl" type="url" defaultValue={selectedBookmark.coverUrl} />
+              </label>
+              <div className="inspector-checks">
+                <label><input name="favorite" type="checkbox" defaultChecked={selectedBookmark.favorite} /> {t('favorite')}</label>
+                <label><input name="unread" type="checkbox" defaultChecked={selectedBookmark.unread} /> {t('unread')}</label>
+              </div>
+              <p>{t('created')} {dateFormat.format(new Date(selectedBookmark.createdAt))}</p>
+              <div className="inspector-actions">
+                <button type="button" onClick={() => void moveToTrash(selectedBookmark)}>{t('moveToTrash')}</button>
+                <button className="primary" type="submit">{t('save')}</button>
+              </div>
+            </form>
+          </aside>
         )}
       </main>
     </div>

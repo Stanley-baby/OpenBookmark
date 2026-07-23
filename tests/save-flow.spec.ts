@@ -550,6 +550,7 @@ test('Manager imports and exports browser bookmark HTML', async () => {
     const manager = await context.newPage();
     await manager.goto(`chrome-extension://${extensionId}/manager.html`);
 
+    await manager.getByRole('button', { name: 'Open settings' }).click();
     await manager.getByLabel('Import browser HTML').setInputFiles(importFile);
     await expect(manager.getByRole('status')).toHaveText('Browser import complete: 2/2, 1 skipped.');
     await expect(manager.getByRole('link', { name: 'Imported root' })).toBeVisible();

@@ -73,11 +73,14 @@ export default function App() {
   const statusText = status === 'saving' ? t('saving') : status === 'saved' ? t('saved') : status === 'updated' ? t('updated') : status === 'error' ? t('saveError') : '';
 
   return (
-    <main>
-      <header>
-        <strong>OpenBookmark</strong>
+    <main className="popup">
+      <header className="popup-header">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">OB</span>
+          <strong>OpenBookmark</strong>
+        </div>
         <label className="language">
-          {t('language')}
+          <span className="sr-only">{t('language')}</span>
           <select value={locale} onChange={(event) => setLocale(event.target.value as Locale)}>
             <option value="en">{t('english')}</option>
             <option value="zh">{t('chinese')}</option>
@@ -85,41 +88,50 @@ export default function App() {
         </label>
       </header>
 
-      <section aria-labelledby="current-page-heading">
+      <section className="save-form" aria-labelledby="current-page-heading">
         <h1 id="current-page-heading">{t('currentPage')}</h1>
         {page ? (
           <>
-            <label>
-              {t('title')}
-              <input value={page.title} onChange={(event) => setPage({ ...page, title: event.target.value })} />
-            </label>
-            <label>
-              {t('url')}
-              <input value={page.url} onChange={(event) => setPage({ ...page, url: event.target.value })} />
-            </label>
-            <label>
-              {t('description')}
-              <textarea value={page.description} onChange={(event) => setPage({ ...page, description: event.target.value })} />
-            </label>
-            <label>
-              {t('cover')}
-              <input value={page.coverUrl} onChange={(event) => setPage({ ...page, coverUrl: event.target.value })} />
-            </label>
-            <label>
-              {t('note')}
+            <div className="page-preview">
+              <div className="cover-preview" aria-hidden="true">
+                {page.coverUrl ? <img src={page.coverUrl} alt="" /> : <span>{page.title.slice(0, 1).toUpperCase()}</span>}
+              </div>
+              <div className="page-copy">
+                <label className="title-field">
+                  <span className="sr-only">{t('title')}</span>
+                  <input value={page.title} onChange={(event) => setPage({ ...page, title: event.target.value })} />
+                </label>
+                <label className="description-field">
+                  <span className="sr-only">{t('description')}</span>
+                  <textarea value={page.description} onChange={(event) => setPage({ ...page, description: event.target.value })} />
+                </label>
+              </div>
+            </div>
+            <label className="note-field">
+              <span>{t('note')}</span>
               <textarea value={page.note} onChange={(event) => setPage({ ...page, note: event.target.value })} />
             </label>
-            <label>
-              {t('collection')}
-              <select value={page.collectionId ?? ''} onChange={(event) => setPage({ ...page, collectionId: event.target.value || null })}>
-                <option value="">{t('unsorted')}</option>
-                {collections.map((collection) => <option key={collection.id} value={collection.id}>{collectionPaths.get(collection.id)}</option>)}
-              </select>
-            </label>
-            <label>
-              {t('tags')}
-              <input value={page.tags.join(', ')} onChange={(event) => setPage({ ...page, tags: event.target.value.split(',') })} />
-            </label>
+            <div className="field-grid">
+              <label>
+                <span>{t('collection')}</span>
+                <select value={page.collectionId ?? ''} onChange={(event) => setPage({ ...page, collectionId: event.target.value || null })}>
+                  <option value="">{t('unsorted')}</option>
+                  {collections.map((collection) => <option key={collection.id} value={collection.id}>{collectionPaths.get(collection.id)}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>{t('tags')}</span>
+                <input value={page.tags.join(', ')} onChange={(event) => setPage({ ...page, tags: event.target.value.split(',') })} />
+              </label>
+              <label>
+                <span>{t('url')}</span>
+                <input value={page.url} onChange={(event) => setPage({ ...page, url: event.target.value })} />
+              </label>
+              <label>
+                <span>{t('cover')}</span>
+                <input value={page.coverUrl} onChange={(event) => setPage({ ...page, coverUrl: event.target.value })} />
+              </label>
+            </div>
             <div className="checks">
               <label><input type="checkbox" checked={page.favorite} onChange={(event) => setPage({ ...page, favorite: event.target.checked })} /> {t('favorite')}</label>
               <label><input type="checkbox" checked={page.unread} onChange={(event) => setPage({ ...page, unread: event.target.checked })} /> {t('unread')}</label>
